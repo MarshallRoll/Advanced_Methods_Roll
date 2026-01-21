@@ -1,0 +1,6 @@
+*.csv
+*.Rhistory
+*.rda
+*.rdata
+DataRaw/
+DataProcessed/
