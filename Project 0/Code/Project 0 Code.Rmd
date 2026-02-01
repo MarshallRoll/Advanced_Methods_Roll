@@ -1,0 +1,107 @@
+---
+title: "Project 0 Code"
+author: "Marshall Roll"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(rmcorr)
+library(naniar)
+library(lmerTest)
+library(flextable)
+```
+
+```{r}
+cort_data <- read_csv("../DataRaw/Project0_Clean_v2.csv")
+```
+
+```{r}
+# Rename variables and collect into working df
+cort_final <- cort_data %>% mutate(
+  date = `Collection Date`,
+  sample = `Collection Sample`, 
+  book_time = `Booket: Clock Time`,
+  cap_time = `MEMs: Clock Time`,
+  wake_time = `Sleep Diary reported wake time`,
+  cortisol = `Cortisol (nmol/L)`,
+  dhea = `DHEA (nmol/L)`
+) %>% 
+  select(SubjectID, date, sample, book_time, cap_time, wake_time, cortisol, dhea)
+
+# Carry wake time across all observations for calculation
+cort_final <- cort_final %>% 
+  group_by(SubjectID, date) %>% 
+  mutate(wake_time = replace_na(wake_time, first(wake_time))) %>% 
+  ungroup()
+
+# Minutes since wake time for cap & booklet
+cort_final <- cort_final %>% 
+  mutate(wake_to_cap = as.numeric(cap_time - wake_time)/60,
+         wake_to_book = as.numeric(book_time - wake_time)/60) 
+```
+
+```{r}
+# Repeated measures correlation - only takes into account complete cases
+# Also only measures correlation within subjects -- does not alert to systematic biases
+rep_corr <- rmcorr(participant = factor(SubjectID), 
+                 measure1 = wake_to_book, 
+                 measure2 = wake_to_cap,
+                 dataset = cort_final)
+
+rep_corr
+
+# R = 0.99
+
+cort_final %>% 
+  ggplot(aes(x = wake_to_book, y = wake_to_cap, color = factor(SubjectID),
+             group = factor(SubjectID))) + 
+  geom_point() + 
+  geom_line(stat = "smooth", method = 'lm', se = FALSE, alpha = 0.15, linewidth = 0.8) +
+  scale_color_viridis_d(option = "H") + 
+  theme_minimal() +
+  guides(color = "none") + 
+  labs(x = "Minutes Since Wake (Booklet)", y = "Minutes Since Wake (Cap)")
+ 
+# Proportion of missingness relatively similar across time points
+cort_final %>%
+  group_by(sample) %>%
+  summarise(
+    n_total = n(),
+    pct_complete = round(sum(!is.na(wake_to_cap), !is.na(wake_to_book)) / n_total * 100, 1),
+    pct_complete_cap = round(sum(!is.na(wake_to_cap))/n() * 100, 1),
+    pct_complete_book = round(sum(!is.na(wake_to_book))/n() * 100, 1)
+  ) %>% 
+  flextable()
+
+# Mixed model for assessing correlation with random intercept for subject
+# Shows a moderate ~10 min difference between average cap and book time from wake 
+corr_glmm <- lmer(wake_to_cap ~ wake_to_book + (1 | SubjectID), 
+              data = cort_final)
+
+summary(corr_glmm)
+```
+
+To assess the agreement between cap and booklet time, a random intercepts model was fit with cap time since wake as the outcome and booklet time as the outcome. There is a slight systematic difference between the two recording methods, with cap time tending to be about 10 minutes later than booklet time and slight subject-specific variability (random intercept SD = 6 minutes). Within-subject correlation for complete cases is very high (repeated measures correlation, r = 0.99). Between 20-30% of observations were incomplete at each of the four time points, with most time points having higher levels of missingness in the cap compared to the book.  
+
+Outcome: time since reported wakeup time
+Agreement: On average, are cap and booklet time similar? 
+1) Test of association, rate of bias (sleep diary wake time - book time/Cap time; calculate manually)
+2) Table/figs, adherence: good = 7.5 mins, adequate = 15 mins
+3) Wakeup - 30, rate of decline post-30 mins, use moles
+
+26+ cortisol possible but unlikely
+exclude cortisol over 80
+
+Upper Limit DHEA: 5.205 nmol/L
+
+1) Mixed effects model with RI for subject or Repeated Measures correlation?  
+ -- scatterplot for booklet time since wake vs cap time    
+2) Tables/figures 
+3) 2 random effects models 
+
+
+
+
+
