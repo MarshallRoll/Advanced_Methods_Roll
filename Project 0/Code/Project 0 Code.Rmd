@@ -11,11 +11,13 @@ library(rmcorr)
 library(naniar)
 library(lmerTest)
 library(flextable)
+library(ggridges)
 ```
 
 ```{r}
 cort_data <- read_csv("../DataRaw/Project0_Clean_v2.csv")
 ```
+# Cleaning
 
 ```{r}
 # Rename variables and collect into working df
@@ -40,8 +42,13 @@ cort_final <- cort_final %>%
 cort_final <- cort_final %>% 
   mutate(wake_to_cap = as.numeric(cap_time - wake_time)/60,
          wake_to_book = as.numeric(book_time - wake_time)/60) 
+
+# Replace cortisol levels greater than 80 nmol/L per investigator guidance
+cort_final <- cort_final %>% 
+  mutate(cortisol = ifelse(cortisol > 80, NA, cortisol))
 ```
 
+# RQ1 - Cap & Book Time Agreement
 ```{r}
 # Repeated measures correlation - only takes into account complete cases
 # Also only measures correlation within subjects -- does not alert to systematic biases
@@ -54,6 +61,7 @@ rep_corr
 
 # R = 0.99
 
+# Subject-specific correlation measures visualization
 cort_final %>% 
   ggplot(aes(x = wake_to_book, y = wake_to_cap, color = factor(SubjectID),
              group = factor(SubjectID))) + 
@@ -64,16 +72,22 @@ cort_final %>%
   guides(color = "none") + 
   labs(x = "Minutes Since Wake (Booklet)", y = "Minutes Since Wake (Cap)")
  
-# Proportion of missingness relatively similar across time points
+# Proportion of missingness across time points
+# Between 20-30% for all time pts.
 cort_final %>%
   group_by(sample) %>%
   summarise(
     n_total = n(),
-    pct_complete = round(sum(!is.na(wake_to_cap), !is.na(wake_to_book)) / n_total * 100, 1),
+    pct_complete = round(sum(!is.na(wake_to_cap) & !is.na(wake_to_book)) / n_total * 100, 1),
     pct_complete_cap = round(sum(!is.na(wake_to_cap))/n() * 100, 1),
     pct_complete_book = round(sum(!is.na(wake_to_book))/n() * 100, 1)
   ) %>% 
-  flextable()
+  flextable() %>% 
+  set_header_labels(sample = "Sample",
+                    n_total = "n",
+                    pct_complete = "Complete (%)", 
+                    pct_complete_cap = "Complete Cap (%)",
+                    pct_complete_book = "Complete Book (%)")
 
 # Mixed model for assessing correlation with random intercept for subject
 # Shows a moderate ~10 min difference between average cap and book time from wake 
@@ -81,9 +95,65 @@ corr_glmm <- lmer(wake_to_cap ~ wake_to_book + (1 | SubjectID),
               data = cort_final)
 
 summary(corr_glmm)
+
+# Pretty good agreement, going to use book time because there is less missingness going forward
 ```
 
-To assess the agreement between cap and booklet time, a random intercepts model was fit with cap time since wake as the outcome and booklet time as the outcome. There is a slight systematic difference between the two recording methods, with cap time tending to be about 10 minutes later than booklet time and slight subject-specific variability (random intercept SD = 6 minutes). Within-subject correlation for complete cases is very high (repeated measures correlation, r = 0.99). Between 20-30% of observations were incomplete at each of the four time points, with most time points having higher levels of missingness in the cap compared to the book.  
+To assess the agreement between cap and booklet time, a random intercepts model was fit with cap time since wake as the outcome and booklet time as the outcome. There is a slight systematic difference between the two recording methods, with cap readings occurring an average of about 10 minutes later than booklet recordings and slight subject-specific variability (random intercept SD = 6 minutes). Within-subject correlation for complete cases is very high (repeated measures correlation, r = 0.99). Between 20-30% of observations were incomplete at each of the four time points, with most time points having higher levels of missingness in the cap compared to the book.  
+
+# RQ2: Adherence to Timing Schedule
+
+```{r}
+# Want to test adherence in second sample (how close to 30 mins) and final sample (how close to 600)
+# Adequate: within 15 mins, Good: within 7.5 minutes
+
+# Sample 2
+cort_samp2 <- cort_final %>% filter(sample == 2)
+
+cort_samp2 <- cort_samp2 %>% 
+  mutate(within_7.5 = ifelse(wake_to_book > 23 & wake_to_book < 37, 1, 0),
+         within_15 = ifelse(wake_to_book > 15 & wake_to_book < 45, 1, 0))
+
+cort_samp2 %>% summarize(
+  prop_7.5 = round(sum(within_7.5, na.rm = TRUE)/n() * 100, 1),
+  prop_15 = round(sum(within_15, na.rm = TRUE)/n() * 100, 1)
+)
+
+# Sample 4
+cort_samp4 <- cort_final %>% filter(sample == 4)
+
+cort_samp4 <- cort_samp4 %>% 
+  mutate(within_7.5 = ifelse(wake_to_book > 593 & wake_to_book < 607, 1, 0),
+         within_15 = ifelse(wake_to_book > 585 & wake_to_book < 615, 1, 0))
+
+cort_samp4 %>% summarize(
+  prop_7.5 = round(sum(within_7.5, na.rm = TRUE)/n() * 100, 1),
+  prop_15 = round(sum(within_15, na.rm = TRUE)/n() * 100, 1)
+)
+
+# Adherence for 600 minutes is low (35.5% within 15 minutes)
+# Density plot to assess full distribution
+
+cort_final %>%
+  filter(sample %in% c(2, 3, 4)) %>% 
+  mutate(sample = factor(sample, 
+                         levels = c(4, 3, 2),
+                         labels = c("Sample 4 (Bedtime)", 
+                                   "Sample 3 (5pm-8pm)",
+                                   "Sample 2 (11am-2pm)"))) %>% 
+  ggplot(aes(x = wake_to_book, y = sample, fill = sample)) + 
+  geom_density_ridges(alpha = 0.7, scale = 0.9) +
+  scale_fill_manual(values = c("#e6194B", "#f58231", "#4363d8")) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  ) +
+  labs(x = "Minutes Since Wake (Booklet)", 
+       y = NULL,
+       title = "Distribution of Time Since Waking by Sample")
+```
 
 Outcome: time since reported wakeup time
 Agreement: On average, are cap and booklet time similar? 
