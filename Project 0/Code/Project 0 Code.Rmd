@@ -9,9 +9,13 @@ output: html_document
 library(tidyverse)
 library(rmcorr)
 library(naniar)
+library(lme4)
 library(lmerTest)
 library(flextable)
 library(ggridges)
+library(table1)
+library(gtsummary)
+library(xfun)
 ```
 
 ```{r}
@@ -47,6 +51,49 @@ cort_final <- cort_final %>%
 cort_final <- cort_final %>% 
   mutate(cortisol = ifelse(cortisol > 80, NA, cortisol))
 ```
+
+
+# Table 1
+
+```{r}
+table1(~wake_to_book + wake_to_cap + cortisol + dhea | sample, 
+       data = cort_final)
+
+cort_final %>% tbl_summary(
+  by = sample, 
+  include = c(cortisol, dhea)
+  )
+```
+# Missingness Evaluation
+```{r}
+# Visualize missingness of variables by sample
+# Cap time missing more than book time
+gg_miss_var(cort_final, facet = sample)
+
+
+# Exploratory missingness plots
+# Few missing values of cortisol and DHEA, can rule out MNAR
+# Missingness seems to be ignorable
+# cort_final %>% 
+#   bind_shadow() %>%
+#   ggplot(aes(x = wake_to_book,
+#                fill = cortisol_NA)) +
+#   geom_histogram()
+# 
+# cort_final %>% 
+#   bind_shadow() %>%
+#   ggplot(aes(x = wake_to_book,
+#                fill = dhea_NA)) +
+#   geom_histogram()
+# 
+# cort_final %>% 
+#   bind_shadow() %>%
+#   ggplot(aes(x = wake_to_book,
+#                fill = wake_to_cap_NA)) +
+#   geom_histogram()
+```
+
+
 
 # RQ1 - Cap & Book Time Agreement
 ```{r}
@@ -135,15 +182,15 @@ cort_samp4 %>% summarize(
 # Density plot to assess full distribution
 
 cort_final %>%
-  filter(sample %in% c(2, 3, 4)) %>% 
   mutate(sample = factor(sample, 
-                         levels = c(4, 3, 2),
-                         labels = c("Sample 4 (Bedtime)", 
-                                   "Sample 3 (5pm-8pm)",
-                                   "Sample 2 (11am-2pm)"))) %>% 
+                         levels = c(4, 3, 2, 1),
+                         labels = c("Sample 4 (+600 minutes)", 
+                                   "Sample 3 (Lunchtime)",
+                                   "Sample 2 (+30 minutes)",
+                                   "Sample 1 (Wake time)"))) %>% 
   ggplot(aes(x = wake_to_book, y = sample, fill = sample)) + 
   geom_density_ridges(alpha = 0.7, scale = 0.9) +
-  scale_fill_manual(values = c("#e6194B", "#f58231", "#4363d8")) +
+  scale_fill_manual(values = c("lightgreen", "#e6194B", "#f58231", "#4363d8")) +
   theme_minimal() +
   theme(
     legend.position = "none",
@@ -151,9 +198,92 @@ cort_final %>%
     panel.grid.major.y = element_blank()
   ) +
   labs(x = "Minutes Since Wake (Booklet)", 
-       y = NULL,
-       title = "Distribution of Time Since Waking by Sample")
+       y = NULL)
+
+# gtsummary for table
 ```
+
+# RQ3: Cortisol & DHEA analysis
+
+```{r}
+# Fit 2 Mixed effects models with random intercepts - DHEA and cortisol as outcomes
+cort_final <- cort_final %>% 
+  mutate(wake_30 = pmax(wake_to_book - 30, 0))
+
+cort_mod <- lmer(log(cortisol) ~  wake_to_book + wake_30 + (1|SubjectID), data = cort_final)
+
+summary(cort_mod)
+confint(cort_mod)
+
+dhea_mod <- lmer(log(dhea) ~  wake_to_book + wake_30 + (1|SubjectID), data = cort_final)
+
+summary(dhea_mod)
+confint(dhea_mod)
+```
+
+```{r}
+# Predictions and plot with predicted line for cortisol
+cort_pred <- data.frame(
+    wake_to_book = seq(
+      min(cort_final$wake_to_book, na.rm = TRUE),
+      max(cort_final$wake_to_book, na.rm = TRUE),
+      length.out = 200
+    )
+  ) %>% 
+  mutate(wake_30 = pmax(0, wake_to_book - 30))
+
+cort_pred$pred <- predict(
+  cort_mod,
+  newdata = newdat,
+  re.form = NA
+)
+
+cort_final %>%
+  ggplot(aes(x = wake_to_book, y = log(cortisol))) +
+  geom_point(aes(color = factor(SubjectID)), alpha = 0.3) +
+  geom_line(
+    data = cort_pred,
+    aes(x = wake_to_book, y = pred),
+    color = "black",
+    linewidth = 1.2
+  ) +
+  scale_color_viridis_d(option = "H") +
+  theme_minimal() +
+  guides(color = "none") +
+  labs(x = "Minutes Since Wake (Booklet)", y = "log(Cortisol nmol/L)")
+
+# Predictions and plot with predicted line for DHEA
+dhea_pred <- data.frame(
+    wake_to_book = seq(
+      min(cort_final$wake_to_book, na.rm = TRUE),
+      max(cort_final$wake_to_book, na.rm = TRUE),
+      length.out = 200
+    )
+  ) %>% 
+  mutate(wake_30 = pmax(0, wake_to_book - 30))
+
+dhea_pred$pred <- predict(
+  dhea_mod,
+  newdata = newdat,
+  re.form = NA
+)
+
+cort_final %>%
+  ggplot(aes(x = wake_to_book, y = log(dhea))) +
+  geom_point(aes(color = factor(SubjectID)), alpha = 0.3) +
+  geom_line(
+    data = dhea_pred,
+    aes(x = wake_to_book, y = pred),
+    color = "black",
+    linewidth = 1.2
+  ) +
+  scale_color_viridis_d(option = "H") +
+  theme_minimal() +
+  guides(color = "none") +
+  labs(x = "Minutes Since Wake (Booklet)", y = "log(DHEA nmol/L)")
+
+```
+
 
 Outcome: time since reported wakeup time
 Agreement: On average, are cap and booklet time similar? 
