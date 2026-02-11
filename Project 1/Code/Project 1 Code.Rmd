@@ -1,0 +1,19 @@
+---
+title: "Project 1 Code"
+author: "Marshall Roll"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(dpi = 300, fig.width = 7, fig.height = 5, warning = FALSE, echo = FALSE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+# Raw data stored locally in folder called DataRaw
+hiv_data <- read_csv("../DataRaw/hiv_6624_final.csv")
+```
