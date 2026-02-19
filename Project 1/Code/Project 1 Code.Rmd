@@ -171,9 +171,9 @@ hiv_data %>%
   ) 
 ```
 
---Race: white non-white
+--Race: white, non-white
 --No ethnicity
---Some college, College, More College
+--Some college, College+
 --Only use population with all outcomes non-missing
 --log 10 viral load outcome
 --keep track of sample size for each analysis
@@ -182,5 +182,7 @@ hiv_data %>%
 --missing values excluded from denominator of table 1 in each step
 --Table 1 with only 506 in complete analysis
 --Include sample size and number of observations in each figure caption
+--no interactions
+--0.5 log10 viral load, 2pts on QOL scores, 50 for CD4+ T cell counts: clinically meaningful changes
 
 <!-- Raw data stored locally in Documents\Advanced_Methods_Roll\Project 1\Code -->
