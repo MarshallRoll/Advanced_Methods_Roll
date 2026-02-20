@@ -66,7 +66,7 @@ hiv_covariates <- hiv_data %>%
   BMI = ifelse(BMI > 500 | BMI < 1, NA, BMI)) %>% 
   filter(years == 0) %>% 
   select(newid, age, BMI, smoking_status, race_collapsed,
-         educ_collapsed)
+         educ_collapsed, hard_drugs)
 
 # Add 2-year adherence to covariates df
 hiv_covariates <- hiv_covariates %>% 
@@ -82,104 +82,71 @@ hiv_cohort <- hiv_cohort %>%
   filter(!is.na(VLOAD_change) & !is.na(LEU3N_change) &
          !is.na(PHYS_change) & !is.na(MENT_change))
 
-by_subj <- hiv_cohort %>% 
-  group_by(newid) %>% 
-  mutate(avg_agg_ment = mean(AGG_MENT), 
-         avg_agg_phys = mean(AGG_PHYS),
-         avg_VLOAD = mean(VLOAD),
-         avg_LEU3N = mean(LEU3N)) %>% 
-  slice_head(n = 1)
+
 ```
 
 
 
 # Assess Missingness
-```{r}
-gg_miss_var(hiv_data %>% 
-              select(-c(LDL, TRIG, TCHOL, ADH, BMI)), 
-            facet = any_hard_drugs)
-
-gg_miss_var(hiv_data %>% 
-              select(VLOAD, LEU3N, AGG_MENT, AGG_PHYS, ADH), 
-            facet = ADH)
-
-gg_miss_var(hiv_data %>% select(VLOAD, LEU3N, AGG_MENT, 
-                                AGG_PHYS, years), 
-            facet = years)
-
-hiv_data %>%
-  bind_shadow() %>%
-  group_by(AGG_PHYS_NA) %>%
-  summarise_at(.vars = c("VLOAD", "LEU3N", "AGG_MENT"),
-               .funs = c("median", "sd", "min", "max"),
-               na.rm = TRUE)
-
-```
 
 ```{r}
 # Little's MCAR Test
 # p < 0.05, not MCAR
-mcar_test <- mcar_test(hiv_data %>% select(VLOAD, LEU3N, AGG_MENT, AGG_PHYS))
+mcar_test <- mcar_test(hiv_data_raw %>% select(VLOAD, LEU3N, AGG_MENT, AGG_PHYS))
 print(mcar_test)
 
-
-test_mnar <- function(data, outcome_vars) {
-  results <- list()
-  
-  for (outcome in outcome_vars) {
-    # Create missingness indicator for each outcome
-    miss_indicator <- paste0(outcome, "_NA")
-    
-    # Test if missingness is associated with OTHER observed outcomes
-    other_outcomes <- setdiff(outcome_vars, outcome)
-    
-    # Logistic regression: does missingness in outcome Y depend on observed values of other three outcomes?
-    for (predictor in other_outcomes) {
-      formula_str <- paste0("as.factor(", miss_indicator, ") ~ ", predictor)
-      
-      tryCatch({
-        model <- glm(as.formula(formula_str), 
-                     data = data %>% bind_shadow(), 
-                     family = binomial)
-        
-        results[[paste(outcome, "missing_by", predictor)]] <- broom::tidy(model) %>%
-          filter(term == predictor) %>%
-          mutate(outcome_missing = outcome,
-                 predictor_observed = predictor)
-      }, error = function(e) {
-        message(paste("Error fitting model for", outcome, "~", predictor))
-      })
-    }
-  }
-  
-  bind_rows(results)
+# Function to find median value of each of the three outcomes in terms of missing values of fourth outcome
+test_mnar <- function(variable, others){
+  hiv_data_raw %>%
+    filter(years %in% c(0, 2)) %>% 
+    group_by(newid) %>% 
+    mutate(max_year = max(years)) %>% 
+    ungroup() %>% 
+    bind_shadow() %>% 
+    filter(years == 2) %>% 
+    mutate(miss_2yr = ifelse(max_year == 0 | is.na({{ variable }}), 1, 0)) %>% 
+    group_by(miss_2yr) %>% 
+    summarise(across(all_of(others), 
+                     list(median = ~median(.x, na.rm = TRUE),
+                          n = ~n()
+                          )))
 }
 
-outcome_vars <- c("VLOAD", "LEU3N", "AGG_MENT", "AGG_PHYS")
-mnar_results <- test_mnar(hiv_data, outcome_vars)
+test_mnar(VLOAD, c("LEU3N", "AGG_PHYS", "AGG_MENT"))
+test_mnar(LEU3N, c("VLOAD", "AGG_PHYS", "AGG_MENT"))
+test_mnar(AGG_PHYS, c("VLOAD", "LEU3N", "AGG_MENT"))
+test_mnar(AGG_MENT, c("VLOAD", "LEU3N", "AGG_PHYS"))
 
-mnar_results %>%
-  select(outcome_missing, predictor_observed, estimate, p.value) %>%
-  arrange(p.value)
-
+# See medians are pretty similar across missingness status, little concern for harmful effect of MNAR 
 ```
 
 
 # Table 1
 ```{r}
-hiv_data %>% 
-  group_by(newid) %>% 
+hiv_cohort %>% 
   tbl_summary(
-  by = any_hard_drugs, 
-  include = c(AGG_MENT),
+  by = hard_drugs, 
+  include = c(age, BMI, smoking_status, race_collapsed,
+         educ_collapsed, VLOAD_0, LEU3N_0, AGG_MENT_0,
+         AGG_PHYS_0),
    statistic = list(
       all_continuous() ~ "{mean} ({sd})",
       all_categorical() ~ "{n} ({p}%)"
     ),
     digits = all_continuous() ~ 2,
-    label = list(AGG_MENT = "SF-36 Mental Component Summary (MCS)"),
+    label = list(
+      AGG_MENT_0 = "SF-36 MCS",
+      AGG_PHYS_0 = "SF-36 PCS",
+      age = "Age",
+      smoking_status = "Smoking Status",
+      race_collapsed = "Race",
+      educ_collapsed = "Education",
+      VLOAD_0 = "log10 Viral Load",
+      LEU3N_0 = "CD4+ T-cell count"),
     missing_text = "(Missing)"
   ) 
+
+# Be sure to note all covariate values at baseline
 ```
 
 --Race: white, non-white
