@@ -20,8 +20,78 @@ library(mice)
 
 ```{r}
 # Raw data stored locally in Documents\Advanced_Methods_Roll\Project 1\Code
-hiv_data <- read_csv("../DataRaw/hiv_6624_final.csv")
+hiv_data_raw <- read_csv("../DataRaw/hiv_6624_final.csv")
 ```
+# Filter Cohort
+```{r}
+# Select only complete cases
+hiv_data <- hiv_data_raw %>% 
+  filter(years %in% c(0, 2)) %>%
+  group_by(newid) %>%
+  filter(n() == 2) %>%
+  ungroup() %>%
+  arrange(newid, years)
+
+# Generate change in outcomes
+hiv_outcomes <- hiv_data %>%
+  # Apply log-10 transformation to viral load per investigator guidance 2/18/26
+  mutate(VLOAD = log10(VLOAD)) %>% 
+  pivot_wider(id_cols = newid,
+              names_from = years,
+              values_from = c(VLOAD, LEU3N, 
+                              AGG_MENT, AGG_PHYS)) %>% 
+  mutate(VLOAD_change = VLOAD_2 - VLOAD_0,
+         LEU3N_change = LEU3N_2 - LEU3N_0, 
+         PHYS_change = AGG_PHYS_2 - AGG_PHYS_0,
+         MENT_change = AGG_MENT_2 - AGG_MENT_0) %>% 
+  select(newid, VLOAD_change, LEU3N_change, PHYS_change,
+         MENT_change, VLOAD_0, LEU3N_0, AGG_MENT_0,
+         AGG_PHYS_0)
+
+# Create baseline covariates
+hiv_covariates <- hiv_data %>% 
+  mutate(race_collapsed = case_when(
+    RACE %in% c(1) ~ "White",
+    RACE %in% c(2, 3, 4, 5, 6, 7, 8) ~ "Non-white"
+  ),
+  educ_collapsed = case_when(
+    EDUCBAS %in% c(1, 2, 3, 4) ~ "LessCollege",
+    EDUCBAS %in% c(5, 6, 7) ~ "CollegeOrMore"
+  ),
+  smoking_status = case_when(
+    SMOKE %in% c(1, 2) ~ "Non-smoker",
+    SMOKE == 3 ~ "Smoker"
+  ),
+  # Removes missing values, coded as -1 and 999, and one value   newid = 179, with BMI ~514 (implausibly large)
+  BMI = ifelse(BMI > 500 | BMI < 1, NA, BMI)) %>% 
+  filter(years == 0) %>% 
+  select(newid, age, BMI, smoking_status, race_collapsed,
+         educ_collapsed)
+
+# Add 2-year adherence to covariates df
+hiv_covariates <- hiv_covariates %>% 
+  left_join(hiv_data %>% 
+              filter(years == 2) %>% 
+              select(newid, ADH), by = "newid")
+
+hiv_cohort <- hiv_covariates %>% 
+  left_join(hiv_outcomes, by = "newid")
+
+# Only include cases with all outcomes non-missing in final cohort
+hiv_cohort <- hiv_cohort %>% 
+  filter(!is.na(VLOAD_change) & !is.na(LEU3N_change) &
+         !is.na(PHYS_change) & !is.na(MENT_change))
+
+by_subj <- hiv_cohort %>% 
+  group_by(newid) %>% 
+  mutate(avg_agg_ment = mean(AGG_MENT), 
+         avg_agg_phys = mean(AGG_PHYS),
+         avg_VLOAD = mean(VLOAD),
+         avg_LEU3N = mean(LEU3N)) %>% 
+  slice_head(n = 1)
+```
+
+
 
 # Assess Missingness
 ```{r}
@@ -91,65 +161,6 @@ mnar_results <- test_mnar(hiv_data, outcome_vars)
 mnar_results %>%
   select(outcome_missing, predictor_observed, estimate, p.value) %>%
   arrange(p.value)
-
-```
-
-
-# Data Cleaning
-```{r}
-hiv_data <- hiv_data %>% 
-  group_by(newid) %>% 
-  mutate(any_hard_drugs = any(hard_drugs == 1)) %>% 
-  ungroup()
-
-hiv_data_by_subj <- hiv_data %>% 
-  group_by(newid) %>% 
-  mutate(avg_agg_ment = mean(AGG_MENT), 
-         avg_agg_phys = mean(AGG_PHYS),
-         avg_VLOAD = mean(VLOAD),
-         avg_LEU3N = mean(LEU3N)) %>% 
-  slice_head(n = 1)
-
-hiv_data <- hiv_data %>% 
-  mutate(race_collapsed = case_when(
-    RACE %in% c(1, 2) ~ "White",
-    RACE %in% c(3, 4) ~ "Black", 
-    RACE %in% c(6) ~ "Asian/Pacific Islander",
-    RACE %in% c(5, 7, 8) ~ "Other"
-  ),
-  ethnicity = case_when(
-    RACE %in% c(2, 4, 8) ~ "Hispanic",
-    RACE %in% c(1, 3, 5, 6, 7) ~ "Non-Hispanic"
-  ),
-  educ_collapsed = case_when(
-    EDUCBAS %in% c(1, 2, 3) ~ "LessCollege",
-    EDUCBAS == 4 ~ "SomeCollege",
-    EDUCBAS == 5 ~ "College", 
-    EDUCBAS %in% c(6, 7) ~ "MoreCollege"
-  ),
-  smoking_status = case_when(
-    SMOKE %in% c(1, 2) ~ "Non-smoker",
-    SMOKE == 3 ~ "Smoker"
-  ),
-  BMI = ifelse(BMI > 200 | BMI < 7, NA, BMI)) 
-  
-  
-hiv_data <- hiv_data %>% 
-  group_by(newid) %>% 
-  mutate(baseline_age = first(age),
-         baseline_bmi = first(BMI),
-         baseline_smoke = first(smoking_status),
-         baseline_educ = first(educ_collapsed),
-         baseline_hard_drug = first(hard_drugs)
-         )
-
-hiv_data_cc <- hiv_data %>%
-  filter(years %in% c(0, 2)) %>%
-  group_by(newid) %>%
-  filter(n() == 2) %>%
-  ungroup() %>%
-  arrange(newid, years)
-
 
 ```
 
