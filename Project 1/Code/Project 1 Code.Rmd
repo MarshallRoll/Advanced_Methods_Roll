@@ -16,6 +16,8 @@ library(visdat)
 library(table1)
 library(gtsummary)
 library(mice)
+library(cmdstanr)
+library(brms)
 ```
 
 ```{r}
@@ -46,7 +48,9 @@ hiv_outcomes <- hiv_data %>%
          MENT_change = AGG_MENT_2 - AGG_MENT_0) %>% 
   select(newid, VLOAD_change, LEU3N_change, PHYS_change,
          MENT_change, VLOAD_0, LEU3N_0, AGG_MENT_0,
-         AGG_PHYS_0)
+         AGG_PHYS_0) %>% 
+  rename(PHYS_0 = AGG_PHYS_0,
+         MENT_0 = AGG_MENT_0)
 
 # Create baseline covariates
 hiv_covariates <- hiv_data %>% 
@@ -82,7 +86,19 @@ hiv_cohort <- hiv_cohort %>%
   filter(!is.na(VLOAD_change) & !is.na(LEU3N_change) &
          !is.na(PHYS_change) & !is.na(MENT_change))
 
-
+# Relevel
+hiv_cohort <- hiv_cohort %>% 
+  mutate(educ_collapsed = 
+           factor(educ_collapsed, 
+                  levels = c("LessCollege", 
+                             "CollegeOrMore")),
+         race_collapsed = 
+           factor(race_collapsed, 
+                  levels = c("White", "Non-white")),
+         adh_collapsed = case_when(
+           ADH %in% c(1, 2) ~ TRUE,
+           ADH %in% c(3, 4) ~ FALSE
+         ))
 ```
 
 
@@ -124,19 +140,38 @@ test_mnar(AGG_MENT, c("VLOAD", "LEU3N", "AGG_PHYS"))
 # Table 1
 ```{r}
 hiv_cohort %>% 
+  mutate(
+    hard_drugs = case_when(
+      hard_drugs == 1 ~ "Hard Drug Use",
+      hard_drugs == 0 ~ "No Hard Drug Use"
+    ),
+    educ_collapsed = case_when(
+      educ_collapsed == "LessCollege" ~ "Less than College",
+      educ_collapsed == "CollegeOrMore" ~ "College or More"
+    ),
+    race_collapsed = case_when(
+      race_collapsed == "White" ~ "White, Non-Hispanic",
+      race_collapsed == "Non-white" ~ "Other"
+    )
+  ) %>%
+  mutate(educ_collapsed = 
+           factor(educ_collapsed, 
+                  levels = c("Less than College", 
+                             "College or More")),
+         race_collapsed = factor(race_collapsed, levels = c("White, Non-Hispanic", "Other"))) %>% 
   tbl_summary(
   by = hard_drugs, 
   include = c(age, BMI, smoking_status, race_collapsed,
-         educ_collapsed, VLOAD_0, LEU3N_0, AGG_MENT_0,
-         AGG_PHYS_0),
+         educ_collapsed, VLOAD_0, LEU3N_0, MENT_0,
+         PHYS_0),
    statistic = list(
       all_continuous() ~ "{mean} ({sd})",
       all_categorical() ~ "{n} ({p}%)"
     ),
     digits = all_continuous() ~ 2,
     label = list(
-      AGG_MENT_0 = "SF-36 MCS",
-      AGG_PHYS_0 = "SF-36 PCS",
+      MENT_0 = "SF-36 MCS",
+      PHYS_0 = "SF-36 PCS",
       age = "Age",
       smoking_status = "Smoking Status",
       race_collapsed = "Race",
@@ -144,10 +179,67 @@ hiv_cohort %>%
       VLOAD_0 = "log10 Viral Load",
       LEU3N_0 = "CD4+ T-cell count"),
     missing_text = "(Missing)"
-  ) 
+  )  %>% 
+  add_overall()
 
 # Be sure to note all covariate values at baseline
 ```
+
+# Frequentist Regression
+
+```{r}
+# Function to run frequentist linear regression for 2-year change in each outcome, controlling for baseline level of outcome
+run_freq_lm <- function(outcome) {
+  
+  formula_str <- paste0(outcome, "_change ~ hard_drugs + ", outcome, "_0 + age + BMI + smoking_status + race_collapsed + educ_collapsed")
+  
+  freq_mod <- lm(as.formula(formula_str), data = hiv_cohort)
+  obj_name <- paste0(outcome, "_model")
+  assign(obj_name, freq_mod, envir = .GlobalEnv)
+  
+  cat("\n--- Analysis for:", outcome, "---\n")
+  
+  print(summary(freq_mod))
+}
+
+run_freq_lm("VLOAD")
+run_freq_lm("LEU3N")
+run_freq_lm("PHYS")
+run_freq_lm("MENT")
+```
+```{r}
+set.seed(515)
+run_bayes_lm <- function(outcome) {
+  
+ formula_str <- paste0(outcome, "_change ~ hard_drugs + ", outcome, "_0 + age + BMI + smoking_status + race_collapsed + educ_collapsed")
+  
+  bayes_mod <- brm(
+    formula = as.formula(formula_str),
+    data = hiv_cohort,
+    family = gaussian(),
+    prior = c(set_prior("normal(0,10000)", class='b'),
+              set_prior("normal(0,10000)", class='Intercept')),
+    backend = "cmdstanr",
+    cores = 4,              
+    chains = 4,             
+    iter = 1000
+  )
+  
+  obj_name <- paste0(outcome, "_bayes_model")
+  assign(obj_name, bayes_mod, envir = .GlobalEnv)
+  
+  cat("\n--- Bayesian Analysis for:", outcome, "---\n")
+  print(summary(bayes_mod))
+  
+  print(plot(bayes_mod)) 
+}
+
+run_bayes_lm("VLOAD")
+run_bayes_lm("LEU3N")
+run_bayes_lm("PHYS")
+run_bayes_lm("MENT")
+```
+
 
 --Race: white, non-white
 --No ethnicity
@@ -162,5 +254,16 @@ hiv_cohort %>%
 --Include sample size and number of observations in each figure caption
 --no interactions
 --0.5 log10 viral load, 2pts on QOL scores, 50 for CD4+ T cell counts: clinically meaningful changes
+--adherence: 95% +, lower than 95%. 
+--hard drug use -> adherence (descriptive)
+--mediation analysis must be bayesian framework
+--change in hard drug use between 
+1) outcome ~ hard drug + cov
+2) outcome ~ hard drug + ADH + cov
 
 <!-- Raw data stored locally in Documents\Advanced_Methods_Roll\Project 1\Code -->
+
+```{r}
+sessionInfo()
+```
+
