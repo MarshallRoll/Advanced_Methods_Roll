@@ -24,6 +24,7 @@ library(brms)
 # Raw data stored locally in Documents\Advanced_Methods_Roll\Project 1\Code
 hiv_data_raw <- read_csv("../DataRaw/hiv_6624_final.csv")
 ```
+
 # Filter Cohort
 ```{r}
 # Select only complete cases
@@ -96,12 +97,12 @@ hiv_cohort <- hiv_cohort %>%
            factor(race_collapsed, 
                   levels = c("White", "Non-white")),
          adh_collapsed = case_when(
-           ADH %in% c(1, 2) ~ TRUE,
-           ADH %in% c(3, 4) ~ FALSE
+           ADH %in% c(1, 2) ~ 1,
+           ADH %in% c(3, 4) ~ 0
          ))
+
+hiv_cohort <- hiv_cohort %>% select(-ADH)
 ```
-
-
 
 # Assess Missingness
 
@@ -152,18 +153,23 @@ hiv_cohort %>%
     race_collapsed = case_when(
       race_collapsed == "White" ~ "White, Non-Hispanic",
       race_collapsed == "Non-white" ~ "Other"
+    ),
+    adh_collapsed = case_when(
+      adh_collapsed == 1 ~ "≥95% Adherence",
+      adh_collapsed == 0 ~ "<95 % Adherence"
     )
   ) %>%
   mutate(educ_collapsed = 
            factor(educ_collapsed, 
                   levels = c("Less than College", 
                              "College or More")),
-         race_collapsed = factor(race_collapsed, levels = c("White, Non-Hispanic", "Other"))) %>% 
+         race_collapsed = factor(race_collapsed, levels = c("White, Non-Hispanic", "Other")),
+         adh_collapsed = factor(adh_collapsed, levels = c("≥95% Adherence", "<95 % Adherence"))) %>% 
   tbl_summary(
   by = hard_drugs, 
   include = c(age, BMI, smoking_status, race_collapsed,
          educ_collapsed, VLOAD_0, LEU3N_0, MENT_0,
-         PHYS_0),
+         PHYS_0, adh_collapsed),
    statistic = list(
       all_continuous() ~ "{mean} ({sd})",
       all_categorical() ~ "{n} ({p}%)"
@@ -177,7 +183,8 @@ hiv_cohort %>%
       race_collapsed = "Race",
       educ_collapsed = "Education",
       VLOAD_0 = "log10 Viral Load",
-      LEU3N_0 = "CD4+ T-cell count"),
+      LEU3N_0 = "CD4+ T-cell count",
+      adh_collapsed = "2-year HAART Adherence"),
     missing_text = "(Missing)"
   )  %>% 
   add_overall()
@@ -217,12 +224,15 @@ run_bayes_lm <- function(outcome) {
     formula = as.formula(formula_str),
     data = hiv_cohort,
     family = gaussian(),
-    prior = c(set_prior("normal(0,10000)", class='b'),
-              set_prior("normal(0,10000)", class='Intercept')),
+    prior = c(set_prior("normal(0,100)", class='Intercept'),
+              set_prior("normal(0,100)", class='b'),
+              set_prior("normal(0,100)", class='sigma')
+              ),
     backend = "cmdstanr",
     cores = 4,              
     chains = 4,             
-    iter = 1000
+    iter = 2000,
+    warmup = 500
   )
   
   obj_name <- paste0(outcome, "_bayes_model")
@@ -239,6 +249,83 @@ run_bayes_lm("LEU3N")
 run_bayes_lm("PHYS")
 run_bayes_lm("MENT")
 ```
+
+# Mediation Analysis
+<!-- 
+Hypothesis: Adherence may serve as a mediator or confounder between hard drug use and outcomes. Need to establish association between HARD_DRUG -> ADH and ADH -> outcomes. Hard drugs and adherence will be assessed using descriptive statistics (both binary) and models adjusted for adherence will also be fit for each outcome. No formal mediation analysis will be conducted, rather the difference in hard drug use coefficients will be presented between adjusted vs unadjusted models. 
+-->
+
+# Descriptive Analysis
+```{r}
+fisher.test(hiv_cohort$hard_drugs, hiv_cohort$adh_collapsed)
+```
+
+# Frequentist Adherence Models
+```{r}
+# Function to run frequentist linear regression for 2-year change in each outcome with adherence
+run_freq_lm_adh <- function(outcome) {
+  
+  formula_str <- paste0(outcome, "_change ~ hard_drugs + ", outcome, "_0 + adh_collapsed + age + BMI + smoking_status + race_collapsed + educ_collapsed")
+  
+  freq_mod <- lm(as.formula(formula_str), data = hiv_cohort)
+  obj_name <- paste0(outcome, "_model")
+  assign(obj_name, freq_mod, envir = .GlobalEnv)
+  
+  cat("\n--- Analysis for:", outcome, "---\n")
+  
+  print(summary(freq_mod))
+}
+
+run_freq_lm_adh("VLOAD")
+run_freq_lm_adh("LEU3N")
+run_freq_lm_adh("PHYS")
+run_freq_lm_adh("MENT")
+```
+
+# Bayesian Adherence Models
+```{r}
+set.seed(515)
+run_bayes_adh_lm <- function(outcome) {
+  
+ formula_str <- paste0(outcome, "_change ~ hard_drugs + ", outcome, "_0 + adh_collapsed + age + BMI + smoking_status + race_collapsed + educ_collapsed")
+  
+  bayes_mod <- brm(
+    formula = as.formula(formula_str),
+    data = hiv_cohort,
+    family = gaussian(),
+    prior = c(set_prior("normal(0,100)", class='Intercept'),
+              set_prior("normal(0,100)", class='b'),
+              set_prior("normal(0,100)", class='sigma')
+              ),
+    backend = "cmdstanr",
+    cores = 4,              
+    chains = 4,             
+    iter = 2000,
+    warmup = 500
+  )
+  
+  obj_name <- paste0(outcome, "_adh_bayes_model")
+  assign(obj_name, bayes_mod_adh, envir = .GlobalEnv)
+  
+  cat("\n--- Bayesian Analysis with ADH for:", outcome, "---\n")
+  print(summary(bayes_mod))
+  
+  print(plot(bayes_mod)) 
+}
+
+run_bayes_lm("VLOAD")
+run_bayes_lm("LEU3N")
+run_bayes_lm("PHYS")
+run_bayes_lm("MENT")
+```
+<!-- Good mixing, everything normally distributed with equal tails. -->
+
+# Results Tables
+
+```{r}
+
+```
+
 
 
 --Race: white, non-white
@@ -261,9 +348,9 @@ run_bayes_lm("MENT")
 1) outcome ~ hard drug + cov
 2) outcome ~ hard drug + ADH + cov
 
-<!-- Raw data stored locally in Documents\Advanced_Methods_Roll\Project 1\Code -->
+
+Raw data stored locally in `Documents\Advanced_Methods_Roll\Project 1\Code`.
 
 ```{r}
 sessionInfo()
 ```
-
