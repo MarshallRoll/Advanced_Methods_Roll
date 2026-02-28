@@ -18,6 +18,8 @@ library(gtsummary)
 library(mice)
 library(cmdstanr)
 library(brms)
+library(gt)
+library(flextable)
 ```
 
 ```{r}
@@ -101,7 +103,9 @@ hiv_cohort <- hiv_cohort %>%
            ADH %in% c(3, 4) ~ 0
          ))
 
-hiv_cohort <- hiv_cohort %>% select(-ADH)
+hiv_cohort <- hiv_cohort %>% 
+  select(-ADH) %>%
+  drop_na(BMI)
 ```
 
 # Assess Missingness
@@ -112,7 +116,7 @@ hiv_cohort <- hiv_cohort %>% select(-ADH)
 mcar_test <- mcar_test(hiv_data_raw %>% select(VLOAD, LEU3N, AGG_MENT, AGG_PHYS))
 print(mcar_test)
 
-# Function to find median value of each of the three outcomes in terms of missing values of fourth outcome
+# Function to find median value of each of the three outcomes in terms of missing values of fourth outcome  
 test_mnar <- function(variable, others){
   hiv_data_raw %>%
     filter(years %in% c(0, 2)) %>% 
@@ -226,7 +230,7 @@ run_bayes_lm <- function(outcome) {
     family = gaussian(),
     prior = c(set_prior("normal(0,100)", class='Intercept'),
               set_prior("normal(0,100)", class='b'),
-              set_prior("normal(0,100)", class='sigma')
+              set_prior("normal(0,100)", class='sigma') # BRMS will automatically convert this to half-normal
               ),
     backend = "cmdstanr",
     cores = 4,              
@@ -241,7 +245,7 @@ run_bayes_lm <- function(outcome) {
   cat("\n--- Bayesian Analysis for:", outcome, "---\n")
   print(summary(bayes_mod))
   
-  print(plot(bayes_mod)) 
+  # print(plot(bayes_mod)) 
 }
 
 run_bayes_lm("VLOAD")
@@ -268,7 +272,7 @@ run_freq_lm_adh <- function(outcome) {
   formula_str <- paste0(outcome, "_change ~ hard_drugs + ", outcome, "_0 + adh_collapsed + age + BMI + smoking_status + race_collapsed + educ_collapsed")
   
   freq_mod <- lm(as.formula(formula_str), data = hiv_cohort)
-  obj_name <- paste0(outcome, "_model")
+  obj_name <- paste0(outcome, "_adh_model")
   assign(obj_name, freq_mod, envir = .GlobalEnv)
   
   cat("\n--- Analysis for:", outcome, "---\n")
@@ -289,13 +293,13 @@ run_bayes_adh_lm <- function(outcome) {
   
  formula_str <- paste0(outcome, "_change ~ hard_drugs + ", outcome, "_0 + adh_collapsed + age + BMI + smoking_status + race_collapsed + educ_collapsed")
   
-  bayes_mod <- brm(
+  bayes_mod_adh <- brm(
     formula = as.formula(formula_str),
     data = hiv_cohort,
     family = gaussian(),
     prior = c(set_prior("normal(0,100)", class='Intercept'),
               set_prior("normal(0,100)", class='b'),
-              set_prior("normal(0,100)", class='sigma')
+              set_prior("normal(0,100)", class='sigma')  # BRMS will automatically convert this to half-normal
               ),
     backend = "cmdstanr",
     cores = 4,              
@@ -304,26 +308,171 @@ run_bayes_adh_lm <- function(outcome) {
     warmup = 500
   )
   
-  obj_name <- paste0(outcome, "_adh_bayes_model")
-  assign(obj_name, bayes_mod_adh, envir = .GlobalEnv)
+  obj_name_adh <- paste0(outcome, "_adh_bayes_model")
+  assign(obj_name_adh, bayes_mod_adh, envir = .GlobalEnv)
   
   cat("\n--- Bayesian Analysis with ADH for:", outcome, "---\n")
-  print(summary(bayes_mod))
+  print(summary(bayes_mod_adh))
   
-  print(plot(bayes_mod)) 
+  # print(plot(bayes_mod)) 
 }
 
-run_bayes_lm("VLOAD")
-run_bayes_lm("LEU3N")
-run_bayes_lm("PHYS")
-run_bayes_lm("MENT")
+run_bayes_adh_lm("VLOAD")
+run_bayes_adh_lm("LEU3N")
+run_bayes_adh_lm("PHYS")
+run_bayes_adh_lm("MENT")
 ```
 <!-- Good mixing, everything normally distributed with equal tails. -->
 
 # Results Tables
 
 ```{r}
+# Helper function to extract freq model results
+extract_freq <- function(model, predictor = "hard_drugs") {
+  coef_table <- summary(model)$coefficients
+  est <- coef_table[predictor, "Estimate"]
+  se  <- coef_table[predictor, "Std. Error"]
+  pval <- coef_table[predictor, "Pr(>|t|)"] 
+  pval <- round(pval, 3)
+  ci_lo <- est - 1.96 * se
+  ci_hi <- est + 1.96 * se
+  list(
+    coef_ci = sprintf("%.3f (%.3f, %.3f)", est, ci_lo, ci_hi),
+    pval = ifelse(pval == 0.000, "<0.001", pval)
+  )
+}
 
+# Helper function to extract Bayesian model results
+extract_bayes <- function(model, predictor = "hard_drugs") {
+  effects <- fixef(model)
+  row_number <- which(rownames(effects) == "hard_drugs")
+  est <- effects[row_number, 1]
+  ci_lo <- effects[row_number ,3]
+  ci_hi <- effects[row_number ,4]
+  waic <- waic(model)$estimates["waic", "Estimate"]
+  list(
+    coef_ci = sprintf("%.3f (%.3f, %.3f)", est, ci_lo, ci_hi),
+    waic = sprintf("%.1f", waic)
+  )
+}
+
+outcomes <- list(
+  list(name = "log10 Viral Load", 
+       freq = VLOAD_model,      
+       freq_adh = VLOAD_adh_model,
+       bayes = VLOAD_bayes_model,
+       bayes_adh = VLOAD_adh_bayes_model),
+  list(name = "CD4+ T-cell Count",  
+       freq = LEU3N_model,
+       freq_adh = LEU3N_adh_model,
+       bayes = LEU3N_bayes_model, 
+       bayes_adh = LEU3N_adh_bayes_model),
+  list(name = "SF-36 PHYS Score",
+       freq = PHYS_model,
+       freq_adh = PHYS_adh_model,
+       bayes = PHYS_bayes_model,  
+       bayes_adh = PHYS_adh_bayes_model),
+  list(name = "SF-36 MENT Score", 
+       freq = MENT_model,
+       freq_adh = MENT_adh_model,
+       bayes = MENT_bayes_model,  
+       bayes_adh = MENT_adh_bayes_model)
+)
+
+rows <- list()
+for (o in outcomes) {
+  rows[[length(rows) + 1]] <- data.frame(
+    Outcome = o$name, Model = "", Freq_CoefCI = "", Pval = "", Bayes_CoefCI = "", WAIC = "",
+    stringsAsFactors = FALSE
+  )
+  # Unadjusted
+  f1 <- extract_freq(o$freq)
+  b1 <- extract_bayes(o$bayes)
+  rows[[length(rows) + 1]] <- data.frame(
+    Outcome = "", Model = "Unadjusted",
+    Freq_CoefCI = f1$coef_ci, Pval = as.character(f1$pval),
+    Bayes_CoefCI = b1$coef_ci, WAIC = b1$waic,
+    stringsAsFactors = FALSE
+  )
+  # Adjusted
+  f2 <- extract_freq(o$freq_adh)
+  b2 <- extract_bayes(o$bayes_adh)
+  rows[[length(rows) + 1]] <- data.frame(
+    Outcome = "", Model = "Adjusted",
+    Freq_CoefCI = f2$coef_ci, Pval = as.character(f2$pval),
+    Bayes_CoefCI = b2$coef_ci, WAIC = b2$waic,
+    stringsAsFactors = FALSE
+  )
+}
+
+tbl <- bind_rows(rows)
+
+tbl %>% 
+  gt() %>% 
+  cols_label(
+    Outcome = "Outcome",
+    Model = "Model",
+    Freq_CoefCI = "Hard Drug Use Effect (95% CI)",
+    Pval = "p-value",
+    Bayes_CoefCI = "Hard Drug Use Effect (95% CrI)",
+    WAIC = "WAIC"
+  ) %>% 
+  tab_spanner(label = "Frequentist", columns = c(Freq_CoefCI, Pval)) %>% 
+  tab_spanner(label = "Bayesian", columns = c(Bayes_CoefCI, WAIC)) %>% 
+  tab_style(
+    style = cell_text(),
+    locations = cells_body(columns = Outcome, rows = Outcome != "")
+  ) %>% 
+  tab_footnote("Adjusted models include adherence as a covariate in addition to the standard covariates in the unadjusted model. Effect of hard drug use represents the difference in predicted 2-year change in outcomes of an average hard drug user relative to an average non-hard drug user. 95% CI = frequentist confidence interval; 95% CrI = Bayesian credible interval.") %>%
+  tab_options(table.font.size = 12)
+```
+
+# Figures
+
+```{r}
+extract_bayes_std_coef <- function(model, data = hiv_cohort, outcome, predictor = "b_hard_drugs") {
+  outcome_sd <- sd(data[[outcome]], na.rm = TRUE)
+  effects <- as_draws_df(model)
+  draws <- effects[[predictor]] / outcome_sd
+  data.frame(
+    est = mean(draws),
+    lo = quantile(draws, 0.025),
+    hi = quantile(draws, 0.975)
+  )
+}
+
+plot_results <- bind_rows(
+  extract_bayes_std_coef(VLOAD_bayes_model, outcome = "VLOAD_change") %>%
+    mutate(outcome = "log10 Viral Load"),
+  extract_bayes_std_coef(LEU3N_bayes_model, outcome = "LEU3N_change") %>%
+    mutate(outcome = "CD4+ T-cell count"),
+  extract_bayes_std_coef(PHYS_bayes_model, outcome = "PHYS_change") %>%
+    mutate(outcome = "SF-36 PCS"),
+  extract_bayes_std_coef(MENT_bayes_model, outcome = "MENT_change") %>%
+    mutate(outcome = "SF-36 MCS")
+) %>%
+  mutate(outcome = factor(outcome, levels = c("SF-36 MCS", "SF-36 PCS",  "CD4+ T-cell count", "log10 Viral Load")))
+
+ggplot(plot_results, aes(x = est, y = outcome)) +
+  geom_vline(xintercept = 0, linetype = "dashed",
+             color = "grey", linewidth = 0.5) +
+  geom_errorbarh(aes(xmin = lo, xmax = hi),
+                 height = 0.15, linewidth = 0.7) +
+  geom_point(size = 3, color = "darkcyan") +
+  labs(
+    x = "Standardized coefficient (SD units)",
+    y = "",
+    title = "Effect of Hard Drug Use on HIV Outcomes",
+    caption = "Posterior means ± 95% credible intervals (standardized).  Effects measured as predicted difference\n in 2-year change in outcome between a typical hard drug user and a typical non-hard drug user.",
+  ) +
+  theme_bw(base_size = 13) +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 12),
+    plot.title = element_text(face = "bold"),
+    plot.caption = element_text(hjust = 1)
+  )
 ```
 
 
