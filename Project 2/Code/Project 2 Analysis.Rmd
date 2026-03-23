@@ -1,0 +1,21 @@
+---
+title: "Project 2 Preliminary Analysis"
+author: "Marshall Roll"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(powertools)
+```
+
+```{r}
+# Raw data stored locally in Documents\Advanced_Methods_Roll\Project 1\Code
+prelim <- read_csv("../DataRaw/PrelimData.csv")
+```
+
+```{r}
+
+```
+
