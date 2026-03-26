@@ -8,6 +8,7 @@ output: html_document
 ```{r}
 library(tidyverse)
 library(powertools)
+library(pwr)
 ```
 
 ```{r}
@@ -16,6 +17,51 @@ prelim <- read_csv("../DataRaw/PrelimData.csv")
 ```
 
 ```{r}
+cor(prelim)
+# use 0.26 - 0.68 as range of correlation in R
+```
+
+```{r}
+# Omnibus tests
+full_cvlt_mod <- lm(CVLT_CNG3 ~ IL_6 + MCP_1, data = prelim)
+summary(full_cvlt_mod) # p = 0.198
+
+full_cort_mod <- lm(CORT_CNG3 ~ IL_6 + MCP_1, data = prelim)
+summary(full_cort_mod) # p = 0.00014
+
+# Individual tests for cort model
+cort_mod_il6 <- lm(CORT_CNG3 ~ IL_6 , data = prelim)
+summary(cort_mod_il6) # p < 0.001
+
+cort_mod_mcp1 <- lm(CORT_CNG3 ~ MCP_1 , data = prelim)
+summary(cort_mod_mcp1) # p < 0.001
+```
+
+
+# Aim 1 Power
+
+```{r}
+omnibus_power_sweep <- function(n = 175, p = 2, alpha = 0.025,
+                        r_range = seq(0.25, 0.75, by = 0.1)){
+  
+  results <- data.frame()
+  
+  for(r in r_range){
+    
+    pwr <- mlrF.overall(N = n, p = p, Rsq = r^2, alpha = alpha)
+    results <- rbind(results, data.frame(
+        r = r,
+        pwr = pwr
+    ))
+  }
+  return(results)
+}
+
+omnibus_power_sweep()
+```
+
+```{r}
 
 ```
+
 
