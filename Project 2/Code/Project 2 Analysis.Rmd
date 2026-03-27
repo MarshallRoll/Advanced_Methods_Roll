@@ -9,6 +9,7 @@ output: html_document
 library(tidyverse)
 library(powertools)
 library(pwr)
+library(flextable)
 ```
 
 ```{r}
@@ -42,27 +43,27 @@ summary(cort_mod_mcp1) # p < 0.001
 
 ```{r}
 omnibus_power_sweep <- function(n = 175, p = 2, alpha = 0.025,
-                        r_range = seq(0.05, 0.65, by = 0.05)){
+                        r_range = seq(0.20, 0.50, by = 0.05)){
   
   results <- data.frame()
   
-  for(r2 in r2_range){
+  for(r in r_range){
     
-    pwr <- mlrF.overall(N = n, p = p, Rsq = r2, alpha = alpha)
+    pwr <- mlrF.overall(N = n, p = p, Rsq = r^2, alpha = alpha)
     results <- rbind(results, data.frame(
-        r2 = r2,
+        r = r,
         pwr = pwr
     ))
   }
   return(results)
 }
 
-omnibus_power_sweep()
+omni <- omnibus_power_sweep()
 ```
 
 ```{r}
 individ_power_sweep <- function(n = 175, alpha = 0.025,
-                        r_range = seq(0.25, 0.75, by = 0.1)){
+                        r_range = seq(0.20, 0.50, by = 0.05)){
   
   results <- data.frame()
   
@@ -77,22 +78,53 @@ individ_power_sweep <- function(n = 175, alpha = 0.025,
   return(results)
 }
 
-individ_power_sweep()
+individ <- individ_power_sweep()
 ```
+
+
+```{r}
+omni <- omni %>% 
+  mutate(Test = "Omnibus")
+
+individ <- individ %>% 
+  mutate(Test = "Individual")
+
+overall_res <- rbind(omni, individ)
+
+overall_res <- overall_res %>%
+  pivot_wider(
+    names_from = Test,
+    values_from = pwr
+  ) %>% 
+  mutate(eff_pwr = Omnibus * Individual)
+
+overall_res %>%
+  flextable() %>%
+  set_header_labels(
+    r = "Effect Size (r)",
+    Omnibus = "Omnibus F-Test Power",
+    Individual = "Theoretical Individual Power",
+    eff_pwr = "Protected Individual Power*"
+  ) %>%
+  colformat_double(digits = 3) %>%
+  add_footer_lines("*Note: Protected Power is the joint probability of both Omnibus and Individual significance.") %>%
+  autofit() %>%
+  theme_booktabs()
+```
+
 
 ```{r}
 delta_vals <- c(0.10, 0.20, 0.30) 
 
-interaction_power_sweep <- function(n = 175, alpha = 0.025,
-                        r_range = seq(0.25, 0.75, by = 0.1),
-                        ad_prop = c(0.75)){
+interaction_power_sweep <- function(n_total = 175, alpha = 0.025,
+                        r_range = seq(0.25, 0.75, by = 0.05),
+                        n_am_pos = c(50, 75, 100, 125)){
   
   results <- data.frame()
   
-  for (prop in ad_prop){
-    n_amci = round(n * prop, 0)
-    n_cont = n - n_amci
-    n_ratio = n_cont / n_amci
+  for (n in n_am_pos){
+    n_am_neg = n_total - n
+    n_ratio = n_am_neg / n
     
     for(r in r_range){
       for(delta in delta_vals){
@@ -101,7 +133,7 @@ interaction_power_sweep <- function(n = 175, alpha = 0.025,
         if(r2 >= 0.99) next
         
         pwr <- corr.2samp(
-          n1 = n_amci,
+          n1 = n,
           n.ratio = n_ratio,
           rho1 = r,
           rho2 = r2,
@@ -110,8 +142,8 @@ interaction_power_sweep <- function(n = 175, alpha = 0.025,
         )
         
         results <- rbind(results, data.frame(
-          n_amci = n_amci,
-          n_cont = n_cont,
+          n_am_pos = n,
+          n_am_neg = n_am_neg,
           r = r,
           delta = delta,
           r2 = r2,
@@ -123,62 +155,22 @@ interaction_power_sweep <- function(n = 175, alpha = 0.025,
   return(results)
 }
 
-interaction_power_sweep()
+interaction_res <- interaction_power_sweep()
+
+interaction_res %>% 
+  mutate(delta = case_when(
+    delta == 0.1 ~ "0.1 (Moderate)",
+    delta == 0.2 ~ "0.2 (Large)",
+    delta == 0.3 ~ "0.3 (Very Large)"
+  )) %>% 
+  ggplot(aes(x = r, y = power, group = n_am_pos, color = factor(n_am_pos))) +
+  geom_line() + 
+  facet_grid(~delta) + 
+  geom_hline(yintercept = 0.8, linetype = "dashed", color = "red") + 
+  theme_minimal() + 
+  labs(x = "Amlyoid Positive Effect Size (Correlation)", y = "Power", color = "Number Amyloid\nPositive Patients",
+       title = "Predicted Power by Interaction Effect Size")
+
+# Correlation represents strength of association between predictor and outcome
+# Effect size represents a difference in strength of association between amyloid positive and amyloid negative patients (0.1 = small difference, 0.3 = large difference)
 ```
-
-```{r}
-enrollment_sensitivity <- function(
-    n_range = seq(100, 225, by = 25),
-    p = 2,
-    alpha = 0.025,
-    r_range = seq(0.25, 0.75, by = 0.1)
-) {
-  results <- data.frame()
-  
-  for (n in n_range) {
-    for (r in r_range) {
-      
-      pwr_omni  <- mlrF.overall(N = n, p = p, Rsq = r^2, alpha = alpha)
-      pwr_indiv <- corr.1samp(N = n, rhoA = r, alpha = alpha)
-      
-      results <- rbind(results, data.frame(
-        n_total    = n,
-        r          = r,
-        pwr_omni   = pwr_omni,
-        pwr_indiv  = pwr_indiv
-      ))
-    }
-  }
-  return(results)
-}
-
-enroll <- enrollment_sensitivity()
-
-enroll_long <- pivot_longer(enroll,
-  cols      = c(pwr_omni, pwr_indiv),
-  names_to  = "test",
-  values_to = "power"
-)
-enroll_long$test <- ifelse(enroll_long$test == "pwr_omni",
-                           "Omnibus", "Individual")
-
-ggplot(enroll_long, aes(x = n_total, y = power,
-                         color = factor(r), group = factor(r))) +
-  geom_line(linewidth = 1) +
-  geom_hline(yintercept = 0.80, linetype = "dashed", color = "gray40") +
-  facet_wrap(~ test) +
-  scale_color_viridis_d(name = "r") +
-  labs(
-    title = "Enrollment sensitivity",
-    x = "Total N",
-    y = "Power"
-  ) +
-  theme_minimal()
-```
-
-
-
-
-Questions:
-1) Since we are not controlling for the aMCI vs control in the model, we are pooling SDs, so does it even matter what the ratio between control vs aMCI is? 
-2) 0.025
