@@ -81,30 +81,49 @@ individ_power_sweep()
 ```
 
 ```{r}
-n_power_sweep <- function(n = 175, alpha = 0.025,
+delta_vals <- c(0.10, 0.20, 0.30) 
+
+interaction_power_sweep <- function(n = 175, alpha = 0.025,
                         r_range = seq(0.25, 0.75, by = 0.1),
-                        trt_prop = c(0.25, 0.4, 0.5, 0.6, 0.75)){
+                        ad_prop = c(0.75)){
   
   results <- data.frame()
   
-  for (prop in trt_prop){
+  for (prop in ad_prop){
     n_amci = round(n * prop, 0)
-    n_cont = 175 - n_amci
+    n_cont = n - n_amci
+    n_ratio = n_cont / n_amci
+    
     for(r in r_range){
-      
-      pwr <- corr.2samp(n1 = n_amci, rho1 = r, rho2 = 0.2, alpha = alpha)
-      results <- rbind(results, data.frame(
+      for(delta in delta_vals){
+        
+        r2 <- r + delta
+        if(r2 >= 0.99) next
+        
+        pwr <- corr.2samp(
+          n1 = n_amci,
+          n.ratio = n_ratio,
+          rho1 = r,
+          rho2 = r2,
+          alpha = alpha,
+          sides = 2
+        )
+        
+        results <- rbind(results, data.frame(
           n_amci = n_amci,
           n_cont = n_cont,
           r = r,
-          pwr = pwr
-      ))
+          delta = delta,
+          r2 = r2,
+          power = pwr
+        ))
+      }
     }
   }
-    return(results)
+  return(results)
 }
 
-n_power_sweep()
+interaction_power_sweep()
 ```
 
 ```{r}
@@ -157,9 +176,7 @@ ggplot(enroll_long, aes(x = n_total, y = power,
   theme_minimal()
 ```
 
-```{r}
 
-```
 
 
 Questions:
