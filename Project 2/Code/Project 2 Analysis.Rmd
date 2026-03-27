@@ -42,15 +42,15 @@ summary(cort_mod_mcp1) # p < 0.001
 
 ```{r}
 omnibus_power_sweep <- function(n = 175, p = 2, alpha = 0.025,
-                        r_range = seq(0.25, 0.75, by = 0.1)){
+                        r_range = seq(0.05, 0.65, by = 0.05)){
   
   results <- data.frame()
   
-  for(r in r_range){
+  for(r2 in r2_range){
     
-    pwr <- mlrF.overall(N = n, p = p, Rsq = r^2, alpha = alpha)
+    pwr <- mlrF.overall(N = n, p = p, Rsq = r2, alpha = alpha)
     results <- rbind(results, data.frame(
-        r = r,
+        r2 = r2,
         pwr = pwr
     ))
   }
@@ -61,7 +61,107 @@ omnibus_power_sweep()
 ```
 
 ```{r}
+individ_power_sweep <- function(n = 175, alpha = 0.025,
+                        r_range = seq(0.25, 0.75, by = 0.1)){
+  
+  results <- data.frame()
+  
+  for(r in r_range){
+    
+    pwr <- corr.1samp(N = n, rhoA = r, alpha = alpha)
+    results <- rbind(results, data.frame(
+        r = r,
+        pwr = pwr
+    ))
+  }
+  return(results)
+}
+
+individ_power_sweep()
+```
+
+```{r}
+n_power_sweep <- function(n = 175, alpha = 0.025,
+                        r_range = seq(0.25, 0.75, by = 0.1),
+                        trt_prop = c(0.25, 0.4, 0.5, 0.6, 0.75)){
+  
+  results <- data.frame()
+  
+  for (prop in trt_prop){
+    n_amci = round(n * prop, 0)
+    n_cont = 175 - n_amci
+    for(r in r_range){
+      
+      pwr <- corr.2samp(n1 = n_amci, rho1 = r, rho2 = 0.2, alpha = alpha)
+      results <- rbind(results, data.frame(
+          n_amci = n_amci,
+          n_cont = n_cont,
+          r = r,
+          pwr = pwr
+      ))
+    }
+  }
+    return(results)
+}
+
+n_power_sweep()
+```
+
+```{r}
+enrollment_sensitivity <- function(
+    n_range = seq(100, 225, by = 25),
+    p = 2,
+    alpha = 0.025,
+    r_range = seq(0.25, 0.75, by = 0.1)
+) {
+  results <- data.frame()
+  
+  for (n in n_range) {
+    for (r in r_range) {
+      
+      pwr_omni  <- mlrF.overall(N = n, p = p, Rsq = r^2, alpha = alpha)
+      pwr_indiv <- corr.1samp(N = n, rhoA = r, alpha = alpha)
+      
+      results <- rbind(results, data.frame(
+        n_total    = n,
+        r          = r,
+        pwr_omni   = pwr_omni,
+        pwr_indiv  = pwr_indiv
+      ))
+    }
+  }
+  return(results)
+}
+
+enroll <- enrollment_sensitivity()
+
+enroll_long <- pivot_longer(enroll,
+  cols      = c(pwr_omni, pwr_indiv),
+  names_to  = "test",
+  values_to = "power"
+)
+enroll_long$test <- ifelse(enroll_long$test == "pwr_omni",
+                           "Omnibus", "Individual")
+
+ggplot(enroll_long, aes(x = n_total, y = power,
+                         color = factor(r), group = factor(r))) +
+  geom_line(linewidth = 1) +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "gray40") +
+  facet_wrap(~ test) +
+  scale_color_viridis_d(name = "r") +
+  labs(
+    title = "Enrollment sensitivity",
+    x = "Total N",
+    y = "Power"
+  ) +
+  theme_minimal()
+```
+
+```{r}
 
 ```
 
 
+Questions:
+1) Since we are not controlling for the aMCI vs control in the model, we are pooling SDs, so does it even matter what the ratio between control vs aMCI is? 
+2) 0.025
