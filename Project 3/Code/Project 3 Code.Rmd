@@ -1,0 +1,73 @@
+---
+title: "Project 3 Analysis"
+author: "Marshall Roll"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(survival)
+library(survminer)
+```
+
+```{r}
+# Raw data stored locally in Documents\Advanced_Methods_Roll\Project 3\Code
+heart <- read_csv("../DataRaw/frmgham2.csv")
+```
+
+# Data Cleaning
+```{r}
+# n = 4434
+heart <- heart %>% 
+  filter(PERIOD == 1) %>% #baseline covariates
+  filter(STROKE != 1) %>% #exclude prior stroke # n = 4019
+  mutate(time_stroke_yrs = TIMESTRK/365.25) %>% # Convert time stroke to years
+  mutate(
+    time_stroke_yrs = pmin(time_stroke_yrs, 10),
+    censored = ifelse(time_stroke_yrs < 10, 1, 0),
+    SEX = case_when(SEX == 1 ~ "Male",
+                     SEX == 2 ~ "Female")
+  )
+
+heart_male <- heart %>% filter(SEX == "Male") # n = 1751
+heart_female <- heart %>% filter(SEX == "Female") # n = 2268
+```
+
+# Table 1
+```{r}
+
+```
+
+# Overall
+
+```{r}
+surv<-survfit(Surv(time_stroke_yrs, censored)~SEX, data=heart)
+
+ggsurvplot(surv, xlim=c(0, 10))
+```
+
+# Male
+
+```{r}
+coxph(Surv(time_stroke_yrs, censored)~AGE + DIABETES + SYSBP, 
+      data = heart_male)
+```
+# Female
+
+```{r}
+coxph(Surv(time_stroke_yrs, censored)~AGE + DIABETES + SYSBP, 
+      data = heart_female)
+```
+
+
+# Questions
+-- Clarify time frame: first ten years of follow-up? Yes, 3 periods? Use 365.25 * 10 as 10 years, don't include period 3 (1st period only)
+  -- time 0, period 1, stroke 1 = stroke before 
+-- Competing risks (comment on limitations but don't account for them)
+-- Censor strokes after 10 years
+-- exclusion criteria: prior stroke
+-- Risk profile: know want to look at age, diabetes, systolic blood pressure; not sure about CHD, blood pressure meds, smoking, total cholesterol, BMI: baseline only 
+
+only descriptive time varying on diabetes and sys BP
+2 separate models for M/F (diff covariates, etc.)
