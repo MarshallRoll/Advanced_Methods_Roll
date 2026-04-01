@@ -1,1 +1,1 @@
-Project Folder - Placeholder until completed
+Data Analysis Plan & Power Calculations for AD progression grant. Should not be shared beyond Colorado Biostatistics department.
