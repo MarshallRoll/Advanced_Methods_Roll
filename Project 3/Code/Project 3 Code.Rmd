@@ -68,6 +68,11 @@ coxph(Surv(time_stroke_yrs, censored)~AGE + DIABETES + SYSBP,
 -- Censor strokes after 10 years
 -- exclusion criteria: prior stroke
 -- Risk profile: know want to look at age, diabetes, systolic blood pressure; not sure about CHD, blood pressure meds, smoking, total cholesterol, BMI: baseline only 
+--Want to keep as much data as possible
+--Risk profiles: estimates for 10-year survival for ages 40, 50, and 60 across baseline no risk factors (diabetes, SBP, maybe CHD, BP Meds, smoker, cholesterol, BMI: average continuous, 0's on categoricals including BP meds); high blood pressure (SYS 160+); diabetes; high blood pressure and diabetes; 1 additional profile based on included covariates  
+--want survival prob for person of each profile
+--More interested in within-sex differences; not necessarily interested in between-sex
+--PH assumption: Look at for everything
 
 only descriptive time varying on diabetes and sys BP
 2 separate models for M/F (diff covariates, etc.)
