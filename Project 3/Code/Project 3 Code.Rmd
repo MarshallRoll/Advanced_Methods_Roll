@@ -9,6 +9,7 @@ output: html_document
 library(tidyverse)
 library(survival)
 library(survminer)
+library(glmnet)
 ```
 
 ```{r}
@@ -21,7 +22,7 @@ heart <- read_csv("../DataRaw/frmgham2.csv")
 # n = 4434
 heart <- heart %>% 
   filter(PERIOD == 1) %>% #baseline covariates
-  filter(STROKE != 1) %>% #exclude prior stroke # n = 4019
+  filter(PREVSTRK != 1) %>% #exclude prior stroke # n = 4402
   mutate(time_stroke_yrs = TIMESTRK/365.25) %>% # Convert time stroke to years
   mutate(
     time_stroke_yrs = pmin(time_stroke_yrs, 10),
@@ -30,12 +31,42 @@ heart <- heart %>%
                      SEX == 2 ~ "Female")
   )
 
-heart_male <- heart %>% filter(SEX == "Male") # n = 1751
-heart_female <- heart %>% filter(SEX == "Female") # n = 2268
+heart_male <- heart %>% filter(SEX == "Male") # n = 1930
+heart_female <- heart %>% filter(SEX == "Female") # n = 2472
 ```
 
 # Table 1
 ```{r}
+heart %>% 
+  mutate(
+    hard_drugs = case_when(
+      hard_drugs == 1 ~ "Hard Drug Use",
+      hard_drugs == 0 ~ "No Hard Drug Use"
+    ), ...
+  ) %>%
+  tbl_summary(
+  by = hard_drugs, 
+  include = c(age, BMI, smoking_status, race_collapsed,
+         educ_collapsed, VLOAD_0, LEU3N_0, MENT_0,
+         PHYS_0, adh_collapsed),
+   statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    digits = all_continuous() ~ 2,
+    label = list(
+      MENT_0 = "SF-36 MCS",
+      PHYS_0 = "SF-36 PCS",
+      age = "Age",
+      smoking_status = "Smoking Status",
+      race_collapsed = "Race",
+      educ_collapsed = "Education",
+      VLOAD_0 = "log10 Viral Load",
+      LEU3N_0 = "CD4+ T-cell count",
+      adh_collapsed = "2-year HAART Adherence"),
+    missing_text = "(Missing)"
+  )  %>% 
+  add_overall()
 
 ```
 
@@ -76,3 +107,15 @@ coxph(Surv(time_stroke_yrs, censored)~AGE + DIABETES + SYSBP,
 
 only descriptive time varying on diabetes and sys BP
 2 separate models for M/F (diff covariates, etc.)
+
+Null: HR = 1 for each of age, diabetes, sys BP
+367 competing deaths, 111 strokes; standard cox model treats deaths as censored, which overestimates cumulative stroke incidence 
+
+Should be 32 excluded for stroke
+Table 1
+----
+Stroke during follow up
+Follow up Time
+
+n = 4275 (127 missing)
+no need to exclude high BP & cholesterol
