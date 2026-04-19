@@ -10,6 +10,9 @@ library(tidyverse)
 library(survival)
 library(survminer)
 library(glmnet)
+library(gtsummary)
+library(cowplot)
+library(naniar)
 ```
 
 ```{r}
@@ -38,57 +41,169 @@ heart_female <- heart %>% filter(SEX == "Female") # n = 2472
 # Table 1
 ```{r}
 heart %>% 
-  mutate(
-    hard_drugs = case_when(
-      hard_drugs == 1 ~ "Hard Drug Use",
-      hard_drugs == 0 ~ "No Hard Drug Use"
-    ), ...
-  ) %>%
   tbl_summary(
-  by = hard_drugs, 
-  include = c(age, BMI, smoking_status, race_collapsed,
-         educ_collapsed, VLOAD_0, LEU3N_0, MENT_0,
-         PHYS_0, adh_collapsed),
-   statistic = list(
+    by = SEX, 
+    include = c(AGE, SYSBP, DIABP, TOTCHOL, CURSMOKE, BMI, DIABETES, BPMEDS,
+                PREVCHD, PREVMI, STROKE, HOSPMI, DEATH, time_stroke_yrs),
+    statistic = list(
       all_continuous() ~ "{mean} ({sd})",
-      all_categorical() ~ "{n} ({p}%)"
-    ),
+      all_categorical() ~ "{n} ({p}%)" 
+      ),
     digits = all_continuous() ~ 2,
     label = list(
-      MENT_0 = "SF-36 MCS",
-      PHYS_0 = "SF-36 PCS",
-      age = "Age",
-      smoking_status = "Smoking Status",
-      race_collapsed = "Race",
-      educ_collapsed = "Education",
-      VLOAD_0 = "log10 Viral Load",
-      LEU3N_0 = "CD4+ T-cell count",
-      adh_collapsed = "2-year HAART Adherence"),
+      AGE = "Age",
+      SYSBP = "Systolic BP",
+      DIABP = "Diastolic BP",
+      CURSMOKE = "Smoker",
+      TOTCHOL = "Total Cholesterol (mg/dL)",
+      DIABETES = "Diabetes",
+      BPMEDS = "Blood Pressure Medication",
+      PREVCHD = "Coronary Heart Disease", 
+      PREVMI = "Past MI",
+      STROKE = "10-year Stroke",
+      HOSPMI = "10-year MI",
+      DEATH = "10-year Death",
+      time_stroke_yrs ~ "Follow-up Time (Years)"
+    ),
     missing_text = "(Missing)"
-  )  %>% 
+  ) %>% 
   add_overall()
 
 ```
 
-# Overall
+# Missing Data
 
 ```{r}
-surv<-survfit(Surv(time_stroke_yrs, censored)~SEX, data=heart)
+## No super high rates of stroke among missing data levels
+heart %>% 
+  group_by(is.na(BPMEDS), SEX) %>% 
+  summarize(Stroke = sum(STROKE), prop_stroke = sum(STROKE)/n())
 
-ggsurvplot(surv, xlim=c(0, 10))
+heart %>% 
+  group_by(is.na(BMI), SEX) %>% 
+  summarize(Stroke = sum(STROKE), prop_stroke = sum(STROKE)/n())
+
+heart %>% 
+  group_by(is.na(TOTCHOL), SEX) %>% 
+  summarize(Stroke = sum(STROKE), prop_stroke = sum(STROKE)/n())
+
+mcar_test(heart_male %>% select(BMI, TOTCHOL, BMI)) # p = 0.14, could be MCAR
 ```
 
-# Male
+
+# Fit Models
 
 ```{r}
-coxph(Surv(time_stroke_yrs, censored)~AGE + DIABETES + SYSBP, 
-      data = heart_male)
+inspect_lasso_fit <- function(df) {
+  forced <- c("AGE", "DIABETES", "SYSBP")
+  penalized <- c("PREVCHD", "BPMEDS", "CURSMOKE", "TOTCHOL", "BMI")
+  all_vars <- c(forced, penalized)
+
+  surv_obj <- Surv(df$time_stroke_yrs, df$censored)
+  X <- df %>%
+    select(all_of(all_vars)) %>%
+    mutate(across(everything(), as.numeric)) %>%
+    as.matrix()
+
+  pf <- c(rep(0, length(forced)), rep(1, length(penalized)))
+
+  set.seed(285)
+  cv_fit <- cv.glmnet(
+    x = X,
+    y = surv_obj,
+    family = "cox",
+    penalty.factor = pf,
+    alpha = 1,
+    nfolds = 10
+  )
+
+  list(cv = cv_fit, penalized = penalized, forced = forced)
+}
+
+fit_m_lasso <- inspect_lasso_fit(heart_male_complete)
+fit_f_lasso <- inspect_lasso_fit(heart_female_complete)
+
+plot_lasso_path <- function(lasso_list, sex_label) {
+  cv_fit <- lasso_list$cv
+
+  path_mat <- as.matrix(cv_fit$glmnet.fit$beta)
+  log_lam <- log(cv_fit$glmnet.fit$lambda)
+
+  path_df <- as.data.frame(t(path_mat)) %>%
+    mutate(log_lambda = log_lam) %>%
+    pivot_longer(-log_lambda, names_to = "variable", values_to = "coef")
+  
+  # plot(cv_fit)
+
+  ggplot(path_df, aes(x = log_lambda, y = coef, color = variable)) +
+    geom_line(linewidth = 0.8) +
+    geom_vline(xintercept = log(cv_fit$lambda.min), linetype = "dashed",
+               color = "black", linewidth = 0.8) +
+    geom_vline(xintercept = log(cv_fit$lambda.1se), linetype = "dashed",
+               color = "red", linewidth = 0.8) +
+    annotate("text", x = log(cv_fit$lambda.min), y = Inf,
+             label = "lambda.min", hjust = -0.1, vjust = 1.5, size = 3) +
+    annotate("text", x = log(cv_fit$lambda.1se), y = Inf,
+             label = "lambda.1se", hjust = 1.2, vjust = 1.5, size = 3,
+             color = "red") +
+    labs(
+      title = paste("LASSO Coefficient Path,", sex_label),
+      x = "log(lambda)",
+      y = "Coefficient",
+      color = "Variable"
+    ) +
+    theme_bw(base_size = 11)
+}
+
+plot_lasso_path(fit_m_lasso, "Male")
+plot_lasso_path(fit_f_lasso, "Female")
+
+
+check_lambda <- function(lasso_list, s) {
+  coefs <- coef(lasso_list$cv, s = s)
+  pen <- lasso_list$penalized
+  data.frame(
+    variable = pen,
+    coef = round(coefs[pen, ], 4),
+    selected = coefs[pen, ] != 0
+  )
+}
+
+# Checking appropriate interim lambdas
+# check_lambda(fit_m_lasso, s = exp(-5))
+# check_lambda(fit_m_lasso, s = exp(-4))
+# check_lambda(fit_f_lasso, s = exp(-6))
+# check_lambda(fit_f_lasso, s = exp(-5))
+
+fit_cox <- function(df, lasso_list, chosen_lambda) {
+  coefs <- coef(lasso_list$cv, s = chosen_lambda)
+  penalized <- lasso_list$penalized
+  forced <- lasso_list$forced
+
+  selected_penalized <- penalized[coefs[penalized, ] != 0]
+  final_vars <- c(forced, selected_penalized)
+  surv_eqn <- as.formula(
+    paste("Surv(time_stroke_yrs, censored) ~", paste(final_vars, collapse = " + "))
+  )
+
+  cox_fit <- coxph(surv_eqn, data = df, x = TRUE)
+  list(cox = cox_fit, selected = selected_penalized, vars = final_vars)
+}
+
+# Selected intermediate lambda values that keep variables with some signal
+lambda_m <- exp(-4)   
+lambda_f <- exp(-5)   
+
+fit_m <- fit_cox(heart_male_complete, fit_m_lasso, lambda_m)
+fit_f <- fit_cox(heart_female_complete, fit_f_lasso, lambda_f)
+
+summary(fit_m$cox)
+summary(fit_f$cox)
 ```
-# Female
+# Risk Profiles
 
 ```{r}
-coxph(Surv(time_stroke_yrs, censored)~AGE + DIABETES + SYSBP, 
-      data = heart_female)
+
 ```
 
 
@@ -119,3 +234,9 @@ Follow up Time
 
 n = 4275 (127 missing)
 no need to exclude high BP & cholesterol
+
+Table 1
+Results Table M 
+Results Table F
+K-M plot (6 panels, age, BP, etc)
+Cox PH (6 panels?)
