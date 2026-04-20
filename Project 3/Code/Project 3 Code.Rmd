@@ -13,17 +13,18 @@ library(glmnet)
 library(gtsummary)
 library(cowplot)
 library(naniar)
+library(flextable)
 ```
 
 ```{r}
 # Raw data stored locally in Documents\Advanced_Methods_Roll\Project 3\Code
-heart <- read_csv("../DataRaw/frmgham2.csv")
+heart_raw <- read_csv("../DataRaw/frmgham2.csv")
 ```
 
 # Data Cleaning
 ```{r}
 # n = 4434
-heart <- heart %>% 
+heart <- heart_raw %>% 
   filter(PERIOD == 1) %>% #baseline covariates
   filter(PREVSTRK != 1) %>% #exclude prior stroke # n = 4402
   mutate(time_stroke_yrs = TIMESTRK/365.25) %>% # Convert time stroke to years
@@ -31,7 +32,8 @@ heart <- heart %>%
     time_stroke_yrs = pmin(time_stroke_yrs, 10),
     censored = ifelse(time_stroke_yrs < 10, 1, 0),
     SEX = case_when(SEX == 1 ~ "Male",
-                     SEX == 2 ~ "Female")
+                     SEX == 2 ~ "Female"),
+    HIGHBP = ifelse(SYSBP >= 160, 1, 0)
   )
 
 heart_male <- heart %>% filter(SEX == "Male") # n = 1930
@@ -43,8 +45,8 @@ heart_female <- heart %>% filter(SEX == "Female") # n = 2472
 heart %>% 
   tbl_summary(
     by = SEX, 
-    include = c(AGE, SYSBP, DIABP, TOTCHOL, CURSMOKE, BMI, DIABETES, BPMEDS,
-                PREVCHD, PREVMI, STROKE, HOSPMI, DEATH, time_stroke_yrs),
+    include = c(AGE, SYSBP, DIABP, HIGHBP, TOTCHOL, CURSMOKE, BMI, DIABETES, 
+                BPMEDS, PREVCHD, PREVMI, STROKE, HOSPMI, DEATH, time_stroke_yrs),
     statistic = list(
       all_continuous() ~ "{mean} ({sd})",
       all_categorical() ~ "{n} ({p}%)" 
@@ -54,6 +56,7 @@ heart %>%
       AGE = "Age",
       SYSBP = "Systolic BP",
       DIABP = "Diastolic BP",
+      HIGHBP = "High Systolic BP (≥160)",
       CURSMOKE = "Smoker",
       TOTCHOL = "Total Cholesterol (mg/dL)",
       DIABETES = "Diabetes",
@@ -94,6 +97,16 @@ mcar_test(heart_male %>% select(BMI, TOTCHOL, BMI)) # p = 0.14, could be MCAR
 # Fit Models
 
 ```{r}
+heart_male_complete <- heart_male %>%
+  select(AGE, SYSBP, DIABETES, TOTCHOL, CURSMOKE, BMI, BPMEDS,
+  PREVCHD, censored, time_stroke_yrs) %>%
+  filter(complete.cases(.))
+
+heart_female_complete <- heart_female %>%
+  select(AGE, SYSBP, DIABETES, TOTCHOL, CURSMOKE, BMI, BPMEDS,
+  PREVCHD, censored, time_stroke_yrs) %>%
+  filter(complete.cases(.))
+
 inspect_lasso_fit <- function(df) {
   forced <- c("AGE", "DIABETES", "SYSBP")
   penalized <- c("PREVCHD", "BPMEDS", "CURSMOKE", "TOTCHOL", "BMI")
@@ -200,12 +213,288 @@ fit_f <- fit_cox(heart_female_complete, fit_f_lasso, lambda_f)
 summary(fit_m$cox)
 summary(fit_f$cox)
 ```
+
 # Risk Profiles
 
 ```{r}
+plot_schoenfeld <- function(fit_list, sex_label) {
+  ph_test <- cox.zph(fit_list$cox)
+  var_names <- rownames(ph_test$table)
+  var_names <- var_names[var_names != "GLOBAL"]
+  global_p <- round(ph_test$table["GLOBAL", "p"], 3)
 
+  plots <- map(var_names, function(v) {
+    df <- data.frame(
+      time = ph_test$x,
+      resid = ph_test$y[, v]
+    )
+    ggplot(df, aes(x = time, y = resid)) +
+      geom_point(alpha = 0.4, size = 0.8) +
+      geom_smooth(method = "loess", se = TRUE, color = "darksalmon",
+                  linewidth = 0.8) +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+      labs(title = v, x = "Time (years)",
+           y = "Scaled Schoenfeld Residual") +
+      theme_bw(base_size = 10)
+  })
+
+  title_plot <- ggdraw() +
+    draw_label(
+      sprintf("%s Schoenfeld Residuals (Global PH p = %.3f)",
+              sex_label, global_p),
+      fontface = "bold", size = 12
+    )
+
+  plot_grid(
+    title_plot,
+    plot_grid(plotlist = plots, ncol = 3, align = "hv"),
+    ncol = 1,
+    rel_heights = c(0.06, 0.94)
+  )
+}
+
+plot_schoenfeld(fit_m, "Male")
+plot_schoenfeld(fit_f, "Female")
+
+# Profiles: no risk factors, high SBP, diabetes, high SBP + diabetes, smoker
+# Ages: 40, 50, 60
+# Continuous vars set to sex-specific means, binary vars set to 0 at baseline
+
+build_risk_table <- function(fit_list, dat, sex_label) {
+  cox_fit <- fit_list$cox
+  vars <- fit_list$vars
+
+  cont_vars <- intersect(c("AGE", "SYSBP", "TOTCHOL", "BMI"), vars)
+  bin_vars <- intersect(c("DIABETES", "PREVCHD", "BPMEDS", "CURSMOKE"), vars)
+
+  # Sex-specific continuous means
+  cont_means <- dat %>%
+    summarize(across(all_of(cont_vars), \(x) mean(x, na.rm = TRUE)))
+
+  make_profile <- function(age, overrides = list()) {
+    prof <- cont_means
+    for (b in bin_vars) prof[[b]] <- 0
+    prof[["AGE"]] <- age
+    for (nm in names(overrides)) {
+      if (nm %in% vars) prof[[nm]] <- overrides[[nm]]
+    }
+    prof %>% select(all_of(vars))
+  }
+
+  profiles <- list(
+    "No Risk Factors" = list(),
+    "High SBP (≥160)" = list(SYSBP = 160),
+    "Diabetes" = list(DIABETES = 1),
+    "High SBP + Diabetes" = list(SYSBP = 160, DIABETES = 1),
+    "Smoker" = list(CURSMOKE = 1)
+  )
+
+  map_dfr(c(40, 50, 60), function(age) {
+    map_dfr(names(profiles), function(pname) {
+      nd  <- make_profile(age, profiles[[pname]])
+      sf  <- survfit(cox_fit, newdata = nd)
+      prob <- 1 - summary(sf, times = 10)$surv
+      data.frame(Age = age, Profile = pname,
+                 Risk = ifelse(sprintf("%.2f%%", prob * 100) > 0.01, 
+                               sprintf("%.2f%%", prob * 100), "<0.01%"))
+    })
+  }) %>%
+    pivot_wider(names_from = Age, values_from = Risk,
+                       names_prefix = "Age ") %>%
+    rename(`Risk Profile` = Profile) %>%
+    flextable() %>% 
+    set_caption(caption = sprintf("10-Year Stroke Probability, %s", sex_label))
+}
+
+build_risk_table(fit_m, heart_male_complete, "Male")
+build_risk_table(fit_f, heart_female_complete, "Female")
+
+
+plot_survival_curves <- function(fit_list, dat, sex_label, age) {
+  cox_fit <- fit_list$cox
+  vars <- fit_list$vars
+
+  cont_vars <- intersect(c("AGE", "SYSBP", "TOTCHOL", "BMI"), vars)
+  bin_vars <- intersect(c("DIABETES", "PREVCHD", "BPMEDS", "CURSMOKE"), vars)
+
+  cont_means <- dat %>%
+    summarize(across(all_of(cont_vars), \(x) mean(x, na.rm = TRUE)))
+
+  make_profile <- function(age, overrides = list()) {
+    prof <- cont_means
+    for (b in bin_vars) prof[[b]] <- 0
+    prof[["AGE"]] <- age
+    for (nm in names(overrides)) {
+      if (nm %in% vars) prof[[nm]] <- overrides[[nm]]
+    }
+    prof %>% select(all_of(vars))
+  }
+
+  profiles <- list(
+    "No Risk Factors" = list(),
+    "High SBP (≥160)" = list(SYSBP = 160),
+    "Diabetes" = list(DIABETES = 1),
+    "High SBP + Diabetes" = list(SYSBP = 160, DIABETES = 1),
+    "Smoker" = list(CURSMOKE = 1)
+  )
+
+  # survival curve for each profile
+  surv_df <- map_dfr(names(profiles), function(pname) {
+    nd  <- make_profile(age, profiles[[pname]])
+    sf <- survfit(cox_fit, newdata = nd)
+    data.frame(
+      time = sf$time,
+      surv = sf$surv,
+      lower = sf$lower,
+      upper = sf$upper,
+      profile = pname
+    )
+  })
+
+  ggplot(surv_df, aes(x = time, y = 1 - surv, color = profile,
+                      fill = profile)) +
+    geom_step(linewidth = 0.8) +
+    # geom_ribbon(aes(ymin = 1 - upper, ymax = 1 - lower),
+    #             alpha = 0.15, color = NA) + # too crowded
+    scale_y_continuous(labels = scales::percent_format(),
+                       limits = c(0, 0.45)) +
+    scale_x_continuous(breaks = seq(0, 10, 2)) +
+    labs(
+      title = sprintf("%s, Age %d", sex_label, age),
+      x = "Time (years)",
+      y = "Cumulative Stroke Probability",
+      color = "Risk Profile",
+      fill = "Risk Profile"
+    ) +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "bottom",
+          legend.text = element_text(size = 8))
+}
+
+# Individual plots
+p1 <- plot_survival_curves(fit_m, heart_male_complete, "Male", 40)
+p2 <- plot_survival_curves(fit_m, heart_male_complete, "Male", 50)
+p3 <- plot_survival_curves(fit_m, heart_male_complete, "Male", 60)
+p4 <- plot_survival_curves(fit_f, heart_female_complete, "Female", 40)
+p5 <- plot_survival_curves(fit_f, heart_female_complete, "Female", 50)
+p6 <- plot_survival_curves(fit_f, heart_female_complete, "Female", 60)
 ```
 
+```{r, fig.width=10, fig.height=12, fig.align='center'}
+# Need to remove labels from each individual graph and then add it back at the end
+# Don't want to mess with above code so make new function
+strip_panel <- function(p, keep_x_axis = FALSE, keep_y_axis = FALSE) {
+  p +
+    theme(
+      legend.position = "none",
+      axis.title.x = if (keep_x_axis) element_text() else element_blank(),
+      axis.title.y = if (keep_y_axis) element_text() else element_blank()
+    )
+}
+
+p1s <- strip_panel(p1)
+p2s <- strip_panel(p2)
+p3s <- strip_panel(p3)
+p4s <- strip_panel(p4)
+p5s <- strip_panel(p5)
+p6s <- strip_panel(p6)
+
+shared_legend <- get_legend(
+  p1 + theme(
+    legend.position  = "bottom",
+    legend.direction = "horizontal",
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 9)
+  )
+)
+
+panel_grid <- plot_grid(
+  p1s, p4s,
+  p2s, p5s,
+  p3s, p6s,
+  ncol= 2,
+  nrow= 3,
+  align= "hv",
+  label_size= 10,
+  label_x= 0.02,
+  label_y = 0.98
+)
+
+y_label <- ggdraw() +
+  draw_label("Cumulative Stroke Probability", angle = 90,
+             fontface = "plain", size = 11)
+
+x_label <- ggdraw() +
+  draw_label("Time (years)", fontface = "plain", size = 11)
+
+grid_with_y <- plot_grid(
+  y_label, panel_grid,
+  ncol = 2,
+  rel_widths = c(0.03, 0.97)
+)
+
+final_plot <- plot_grid(
+  grid_with_y,
+  x_label,
+  shared_legend,
+  ncol = 1,
+  rel_heights = c(0.88, 0.03, 0.09)
+)
+
+
+final_plot
+```
+
+# Time-Varying Analysis
+
+```{r}
+heart_complete <- heart_raw %>%
+  group_by(RANDID) %>%
+  filter(n_distinct(PERIOD) == 3) %>%
+  ungroup()
+
+complete_ids <- heart_complete %>%
+  filter(PERIOD == 1, PREVSTRK != 1) %>% # exclude only prevstrk in period 1
+  pull(RANDID)
+
+heart_complete <- heart_complete %>%
+  filter(RANDID %in% complete_ids)
+
+heart_1 <- heart_complete %>% filter(PERIOD == 1) # n = 3197 for all
+heart_2 <- heart_complete %>% filter(PERIOD == 2)
+heart_3 <- heart_complete %>% filter(PERIOD == 3)
+```
+
+```{r}
+time_var_tbl <- heart_periods %>%
+  tbl_summary(
+    by = Period,
+    include = c(SYSBP, TOTCHOL, CURSMOKE, BMI, DIABETES,
+                BPMEDS, PREVCHD),
+    statistic = list(
+      all_continuous()  ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    digits = all_continuous() ~ 2,
+    label = list(
+      SYSBP = "Systolic BP",
+      CURSMOKE = "Smoker",
+      TOTCHOL  = "Total Cholesterol (mg/dL)",
+      DIABETES = "Diabetes",
+      BPMEDS  = "Blood Pressure Medication",
+      PREVCHD = "Coronary Heart Disease"
+    ),
+    missing_text = "(Missing)"
+  ) %>%
+  add_p(
+    test = list(
+      all_continuous()  ~ "kruskal.test", # not adjusting for longitudinal, just simple descriptive
+      all_categorical() ~ "chisq.test"
+    )
+  )
+
+time_var_tbl
+```
 
 # Questions
 -- Clarify time frame: first ten years of follow-up? Yes, 3 periods? Use 365.25 * 10 as 10 years, don't include period 3 (1st period only)
