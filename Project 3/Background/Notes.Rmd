@@ -1,0 +1,39 @@
+---
+title: "Notes"
+author: "Marshall Roll"
+date: "`r Sys.Date()`"
+output: html_document
+---
+# Questions
+-- Clarify time frame: first ten years of follow-up? Yes, 3 periods? Use 365.25 * 10 as 10 years, don't include period 3 (1st period only)
+  -- time 0, period 1, stroke 1 = stroke before 
+-- Competing risks (comment on limitations but don't account for them)
+-- Censor strokes after 10 years
+-- exclusion criteria: prior stroke
+-- Risk profile: know want to look at age, diabetes, systolic blood pressure; not sure about CHD, blood pressure meds, smoking, total cholesterol, BMI: baseline only 
+--Want to keep as much data as possible
+--Risk profiles: estimates for 10-year survival for ages 40, 50, and 60 across baseline no risk factors (diabetes, SBP, maybe CHD, BP Meds, smoker, cholesterol, BMI: average continuous, 0's on categoricals including BP meds); high blood pressure (SYS 160+); diabetes; high blood pressure and diabetes; 1 additional profile based on included covariates  
+--want survival prob for person of each profile
+--More interested in within-sex differences; not necessarily interested in between-sex
+--PH assumption: Look at for everything
+
+only descriptive time varying on diabetes and sys BP
+2 separate models for M/F (diff covariates, etc.)
+
+Null: HR = 1 for each of age, diabetes, sys BP
+367 competing deaths, 111 strokes; standard cox model treats deaths as censored, which overestimates cumulative stroke incidence 
+
+Should be 32 excluded for stroke
+Table 1
+----
+Stroke during follow up
+Follow up Time
+
+n = 4275 (127 missing)
+no need to exclude high BP & cholesterol
+
+Table 1
+Results Table M 
+Results Table F
+K-M plot (6 panels, age, BP, etc)
+Cox PH (6 panels?)

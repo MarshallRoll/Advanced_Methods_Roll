@@ -2,7 +2,9 @@
 title: "Project 3 Analysis"
 author: "Marshall Roll"
 date: "`r Sys.Date()`"
-output: html_document
+output:
+  word_document: default
+  html_document: default
 ---
 
 ```{r}
@@ -14,6 +16,7 @@ library(gtsummary)
 library(cowplot)
 library(naniar)
 library(flextable)
+library(car)
 ```
 
 ```{r}
@@ -90,7 +93,12 @@ heart %>%
   group_by(is.na(TOTCHOL), SEX) %>% 
   summarize(Stroke = sum(STROKE), prop_stroke = sum(STROKE)/n())
 
-mcar_test(heart_male %>% select(BMI, TOTCHOL, BMI)) # p = 0.14, could be MCAR
+mcar_test(heart %>% select(STROKE, BMI, TOTCHOL, BPMEDS)) # p = 0.55, could be MCAR
+
+# Stroke not a significant predictor of missingness
+summary(glm(is.na(BMI) ~ STROKE, family = binomial, data = heart))
+summary(glm(is.na(TOTCHOL) ~ STROKE, family = binomial, data = heart))
+summary(glm(is.na(BPMEDS) ~ STROKE, family = binomial, data = heart))
 ```
 
 
@@ -212,6 +220,9 @@ fit_f <- fit_cox(heart_female_complete, fit_f_lasso, lambda_f)
 
 summary(fit_m$cox)
 summary(fit_f$cox)
+
+# vif(fit_m$cox)
+# vif(fit_f$cox)
 ```
 
 # Risk Profiles
@@ -289,16 +300,35 @@ build_risk_table <- function(fit_list, dat, sex_label) {
     "Smoker" = list(CURSMOKE = 1)
   )
 
-  map_dfr(c(40, 50, 60), function(age) {
-    map_dfr(names(profiles), function(pname) {
-      nd  <- make_profile(age, profiles[[pname]])
-      sf  <- survfit(cox_fit, newdata = nd)
-      prob <- 1 - summary(sf, times = 10)$surv
-      data.frame(Age = age, Profile = pname,
-                 Risk = ifelse(sprintf("%.2f%%", prob * 100) > 0.01, 
-                               sprintf("%.2f%%", prob * 100), "<0.01%"))
-    })
-  }) %>%
+map_dfr(c(40, 50, 60), function(age) {
+  map_dfr(names(profiles), function(pname) {
+    nd <- make_profile(age, profiles[[pname]])
+    sf <- survfit(cox_fit, newdata = nd)
+    sm <- summary(sf, times = 10)
+
+    prob <- 1 - sm$surv
+    lower <- 1 - sm$upper   
+    upper <- 1 - sm$lower
+
+    risk_fmt <- ifelse(prob < 0.0001, 
+                       "<0.01%", 
+                       sprintf("%.2f%%", prob * 100))
+    ci_fmt <- ifelse(
+      prob < 0.0001,
+      "<0.01%",
+      paste0(sprintf("%.2f%%", lower * 100), ", ", 
+             sprintf("%.2f%%", upper * 100))
+    )
+    
+    risk_final <- paste0(risk_fmt, " (", ci_fmt, ")")
+
+    data.frame(
+      Age = age,
+      Profile = pname,
+      Risk = risk_final 
+    )
+  })
+ }) %>%
     pivot_wider(names_from = Age, values_from = Risk,
                        names_prefix = "Age ") %>%
     rename(`Risk Profile` = Profile) %>%
@@ -466,9 +496,9 @@ heart_3 <- heart_complete %>% filter(PERIOD == 3)
 ```
 
 ```{r}
-time_var_tbl <- heart_periods %>%
+time_var_tbl <- heart_complete %>%
   tbl_summary(
-    by = Period,
+    by = PERIOD,
     include = c(SYSBP, TOTCHOL, CURSMOKE, BMI, DIABETES,
                 BPMEDS, PREVCHD),
     statistic = list(
@@ -485,47 +515,54 @@ time_var_tbl <- heart_periods %>%
       PREVCHD = "Coronary Heart Disease"
     ),
     missing_text = "(Missing)"
-  ) %>%
-  add_p(
-    test = list(
-      all_continuous()  ~ "kruskal.test", # not adjusting for longitudinal, just simple descriptive
-      all_categorical() ~ "chisq.test"
-    )
-  )
+  ) 
 
 time_var_tbl
 ```
+# Hazard Ratio Table 
 
-# Questions
--- Clarify time frame: first ten years of follow-up? Yes, 3 periods? Use 365.25 * 10 as 10 years, don't include period 3 (1st period only)
-  -- time 0, period 1, stroke 1 = stroke before 
--- Competing risks (comment on limitations but don't account for them)
--- Censor strokes after 10 years
--- exclusion criteria: prior stroke
--- Risk profile: know want to look at age, diabetes, systolic blood pressure; not sure about CHD, blood pressure meds, smoking, total cholesterol, BMI: baseline only 
---Want to keep as much data as possible
---Risk profiles: estimates for 10-year survival for ages 40, 50, and 60 across baseline no risk factors (diabetes, SBP, maybe CHD, BP Meds, smoker, cholesterol, BMI: average continuous, 0's on categoricals including BP meds); high blood pressure (SYS 160+); diabetes; high blood pressure and diabetes; 1 additional profile based on included covariates  
---want survival prob for person of each profile
---More interested in within-sex differences; not necessarily interested in between-sex
---PH assumption: Look at for everything
+```{r}
+make_hr_table <- function(fit_m, fit_f) {
+  tbl_m <- tbl_regression(
+    fit_m$cox,
+    exponentiate = TRUE,
+    label = list(
+      AGE = "Age",
+      SYSBP = "Systolic BP",
+      DIABETES = "Diabetes",
+      PREVCHD = "Coronary Heart Disease",
+      BPMEDS = "BP Medication",
+      CURSMOKE = "Current Smoker",
+      TOTCHOL = "Total Cholesterol (mg/dL)",
+      BMI = "BMI"
+    )
+  ) %>%
+    modify_header(estimate = "**HR**")
 
-only descriptive time varying on diabetes and sys BP
-2 separate models for M/F (diff covariates, etc.)
+  tbl_f <- tbl_regression(
+    fit_f$cox,
+    exponentiate = TRUE,
+    label = list(
+      AGE = "Age",
+      SYSBP = "Systolic BP",
+      DIABETES = "Diabetes",
+      PREVCHD = "Coronary Heart Disease",
+      BPMEDS = "BP Medication",
+      CURSMOKE = "Current Smoker",
+      TOTCHOL = "Total Cholesterol (mg/dL)",
+      BMI = "BMI"
+    )
+  ) %>%
+    modify_header(estimate = "**HR**")
 
-Null: HR = 1 for each of age, diabetes, sys BP
-367 competing deaths, 111 strokes; standard cox model treats deaths as censored, which overestimates cumulative stroke incidence 
+  tbl_merge(
+    tbls = list(tbl_m, tbl_f),
+    tab_spanner = c("**Male**", "**Female**")
+  ) %>%
+    modify_caption("Hazard Ratios (95% CI) from Cox Proportional Hazards Models")
+}
 
-Should be 32 excluded for stroke
-Table 1
-----
-Stroke during follow up
-Follow up Time
+make_hr_table(fit_m, fit_f)
+```
 
-n = 4275 (127 missing)
-no need to exclude high BP & cholesterol
 
-Table 1
-Results Table M 
-Results Table F
-K-M plot (6 panels, age, BP, etc)
-Cox PH (6 panels?)
