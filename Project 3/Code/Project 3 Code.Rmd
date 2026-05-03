@@ -370,7 +370,7 @@ plot_survival_curves <- function(fit_list, dat, sex_label, age) {
 
   # survival curve for each profile
   surv_df <- map_dfr(names(profiles), function(pname) {
-    nd  <- make_profile(age, profiles[[pname]])
+    nd <- make_profile(age, profiles[[pname]])
     sf <- survfit(cox_fit, newdata = nd)
     data.frame(
       time = sf$time,
