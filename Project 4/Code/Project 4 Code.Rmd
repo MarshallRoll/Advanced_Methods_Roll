@@ -1,0 +1,407 @@
+---
+title: "Project 4 Code"
+author: "Marshall Roll"
+date: "`r Sys.Date()`"
+output: html_document
+---
+<!-- Packages -->
+
+```{r}
+library(tidyverse)
+library(hdrm)
+library(future)
+library(future.apply)
+```
+
+<!-- Simulation Size -->
+
+```{r}
+# With a minimum possible coverage of 50% and a desired SE of 0.01, 2500 sims
+min_cov <- 0.5
+req_se <- 0.01
+nsim <- ceiling(min_cov*(1-min_cov)/req_se^2)
+nsim
+```
+
+
+<!-- Data Simulation -->
+
+```{r}
+set.seed(333)
+simulate_data <- function(n, rho) {
+  param <- c(1/6, 1/3, 1/2, 2/3, 5/6, rep(0, 15))
+  data <- gen_data(
+    n = n,
+    p = 20,
+    p1 = 5,
+    beta = param,
+    family = "gaussian",
+    corr = "exchangeable",
+    rho = rho
+  )
+  # Name columns x1-x20
+  colnames(data$X) <- paste0("x", 1:20)
+  data
+}
+```
+
+
+<!-- Simulation Parameters -->
+
+```{r}
+n_sims <- 10
+p <- 20
+n_true <- 5
+n_null <- 15
+true_ids <- 1:5
+null_ids <- 6:20
+true_coefs <- c(1/6, 1/3, 1/2, 2/3, 5/6)
+beta_full <- c(true_coefs, rep(0, n_null))  # length-20 true coefficient vector
+
+scenarios <- expand.grid(
+  n = c(250, 500),
+  rho = c(0, 0.35, 0.70)
+)
+scenarios$label <- paste0("n=", scenarios$n, ", rho=", scenarios$rho)
+n_scenarios <- nrow(scenarios)
+
+methods <- c("backward_pval", "aic", "bic",
+             "lasso_min", "lasso_1se",
+             "enet_min",  "enet_1se")
+
+# Penalty for backward p-value selection (alpha = 0.05 LRT threshold)
+k_pval <- qchisq(0.95, df = 1)   # ~3.84, equivalent to p < 0.05
+
+plan(multisession, workers = 6) # 6 future workers
+```
+
+
+<!-- Selection Functions -->
+
+```{r}
+# Backward selection using p-value threshold via LRT penalty
+select_backward_pval <- function(X, y) {
+  df <- as.data.frame(X)
+  df$y <- y
+  full_fit <- lm(y ~ ., data = df)
+  step_fit <- stepAIC(full_fit, direction = "backward",
+                      k = k_pval, trace = FALSE)
+  setdiff(names(coef(step_fit)), "(Intercept)")
+}
+
+# AIC backward selection (k = 2)
+select_aic <- function(X, y) {
+  df <- as.data.frame(X)
+  df$y <- y
+  full_fit <- lm(y ~ ., data = df)
+  step_fit <- stepAIC(full_fit, direction = "backward",
+                      k = 2, trace = FALSE)
+  setdiff(names(coef(step_fit)), "(Intercept)")
+}
+
+# BIC backward selection (k = log(n))
+select_bic <- function(X, y) {
+  n <- nrow(X)
+  df <- as.data.frame(X)
+  df$y <- y
+  full_fit <- lm(y ~ ., data = df)
+  step_fit <- stepAIC(full_fit, direction = "backward",
+                      k = log(n), trace = FALSE)
+  setdiff(names(coef(step_fit)), "(Intercept)")
+}
+
+# LASSO: fit once, extract both lambda.min and lambda.1se selections
+select_lasso_both <- function(X, y) {
+  cv_fit <- cv.glmnet(X, y, alpha = 1, nfolds = 10)
+  coefs_min <- coef(cv_fit, s = "lambda.min")[-1, 1]
+  coefs_1se <- coef(cv_fit, s = "lambda.1se")[-1, 1]
+  list(
+    lasso_min = names(coefs_min)[coefs_min != 0],
+    lasso_1se = names(coefs_1se)[coefs_1se != 0]
+  )
+}
+
+# Elastic net: grid search over alpha; fit once at best alpha, extract both
+select_enet_both <- function(X, y) {
+  alpha_grid <- seq(0.1, 0.9, by = 0.1)
+  best_cvm <- Inf
+  best_alpha <- NA
+
+  for (a in alpha_grid) {
+    cv_fit <- cv.glmnet(X, y, alpha = a, nfolds = 10)
+    if (min(cv_fit$cvm) < best_cvm) {
+      best_cvm <- min(cv_fit$cvm)
+      best_alpha <- a
+    }
+  }
+
+  cv_best <- cv.glmnet(X, y, alpha = best_alpha, nfolds = 10)
+  coefs_min <- coef(cv_best, s = "lambda.min")[-1, 1]
+  coefs_1se <- coef(cv_best, s = "lambda.1se")[-1, 1]
+  list(
+    enet_min = names(coefs_min)[coefs_min != 0],
+    enet_1se = names(coefs_1se)[coefs_1se != 0]
+  )
+}
+
+# OLS refit on selected variables
+refit_ols <- function(X, y, selected) {
+  df <- as.data.frame(X[, selected, drop = FALSE])
+  df$y <- y
+  fit <- lm(y ~ ., data = df)
+  ci <- confint(fit, level = 0.95)
+  list(
+    est = coef(fit)[selected],
+    lower = ci[selected, 1],
+    upper = ci[selected, 2]
+  )
+}
+```
+
+<!-- Run One Simulation -->
+
+```{r}
+run_one_sim <- function(sim, n, rho, p, methods, k_pval, beta_full) {
+  set.seed(sim) # Setting seed manually here instead of in parallel processing
+
+  dat <- simulate_data(n = n, rho = rho)
+  X <- dat$X
+  y <- dat$y
+  all_vars <- paste0("x", 1:p)
+
+  lasso_sel <- tryCatch(select_lasso_both(X, y),
+                        error = function(e) list(lasso_min = character(0),
+                                                 lasso_1se = character(0)))
+  enet_sel <- tryCatch(select_enet_both(X, y), # zero out errors
+                        error = function(e) list(enet_min = character(0),
+                                                 enet_1se = character(0))) 
+  
+  sel_list <- list(
+    backward_pval = tryCatch(select_backward_pval(X, y), 
+                             error = function(e) character(0)),
+    aic = tryCatch(select_aic(X, y), error = function(e) character(0)),
+    bic = tryCatch(select_bic(X, y), error = function(e) character(0)),
+    lasso_min = lasso_sel$lasso_min,
+    lasso_1se = lasso_sel$lasso_1se,
+    enet_min = enet_sel$enet_min,
+    enet_1se = enet_sel$enet_1se
+  )
+
+  # Create per-method result
+  result <- vector("list", length(methods))
+  names(result) <- methods
+
+  for (m in methods) {
+    selected <- sel_list[[m]]
+    sel_vec <- setNames(all_vars %in% selected, all_vars)
+
+    ols_est <- ols_lower <- ols_upper <- setNames(rep(NA_real_, p), all_vars) 
+    #NA_real_ defaults to numeric type NA rather than logical
+
+    if (length(selected) > 0) {
+      ols <- tryCatch(refit_ols(X, y, selected), error = function(e) NULL)
+      if (!is.null(ols)) {
+        ols_est[selected] <- ols$est
+        ols_lower[selected] <- ols$lower
+        ols_upper[selected] <- ols$upper
+      }
+    }
+
+    result[[m]] <- list(
+      selected = sel_vec,
+      est = ols_est,
+      lower = ols_lower,
+      upper = ols_upper
+    )
+  }
+
+  result
+}
+```
+
+
+<!-- Simulation Loop -->
+
+```{r, warning = FALSE}
+all_scenario_results <- vector("list", n_scenarios)
+
+for(s in seq_len(n_scenarios)) {
+  n <- scenarios$n[s]
+  rho <- scenarios$rho[s]
+  cat(sprintf("Scenario %d/%d: %s\n", s, n_scenarios, scenarios$label[s]))
+
+  # Parallel over simulations; future_lapply handles exporting needed objects
+  sim_results <- future_lapply(
+    seq_len(n_sims),
+    run_one_sim,
+    n = n, rho = rho, p = p, methods = methods,
+    k_pval = k_pval, beta_full = beta_full,
+    future.seed = NULL  # Manually changing seed inside run_one_sim function
+  )
+
+  all_scenario_results[[s]] <- sim_results
+}
+```
+<!-- Overall Results -->
+
+```{r}
+all_vars <- paste0("x", 1:p)
+
+overall_tpr <- matrix(NA_real_, nrow = n_scenarios, ncol = length(methods),
+                      dimnames = list(scenarios$label, methods))
+overall_fpr <- matrix(NA_real_, nrow = n_scenarios, ncol = length(methods),
+                      dimnames = list(scenarios$label, methods))
+
+# Three-level storage: Scenario, Method, Variable 
+var_store <- vector("list", n_scenarios)
+
+for(s in seq_len(n_scenarios)) {
+  sim_results <- all_scenario_results[[s]]
+
+  sel_array <- array(
+    FALSE,
+    dim = c(n_sims, length(methods), p),
+    dimnames = list(NULL, methods, all_vars)
+  )
+
+  # Initialize storage object
+  var_store[[s]] <- vector("list", length(methods))
+  names(var_store[[s]]) <- methods
+  for(m in methods) {
+    var_store[[s]][[m]] <- vector("list", p)
+    names(var_store[[s]][[m]]) <- all_vars
+    for(v in all_vars) {
+      var_store[[s]][[m]][[v]] <- list(
+        selected = logical(n_sims),
+        est = rep(NA_real_, n_sims),
+        lower = rep(NA_real_, n_sims),
+        upper = rep(NA_real_, n_sims)
+      )
+    }
+  }
+
+  # Fill from sim_results
+  for(sim in seq_len(n_sims)) {
+    for(m in methods) {
+      r <- sim_results[[sim]][[m]]
+      sel_array[sim, m, ] <- r$selected
+      for(v in all_vars) {
+        var_store[[s]][[m]][[v]]$selected[sim] <- r$selected[v]
+        var_store[[s]][[m]][[v]]$est[sim] <- r$est[v]
+        var_store[[s]][[m]][[v]]$lower[sim] <- r$lower[v]
+        var_store[[s]][[m]][[v]]$upper[sim] <- r$upper[v]
+      }
+    }
+  }
+
+  # TPR and FPR
+  true_vars <- paste0("x", true_ids)
+  null_vars  <- paste0("x", null_ids)
+  for (m in methods) {
+    overall_tpr[s, m] <- mean(apply(sel_array[, m, true_vars, drop = FALSE], 
+                                     1, all))
+    # currently checking to see if ALL X1-X5 included in model = TP
+    overall_fpr[s, m] <- mean(apply(sel_array[, m, null_vars, drop = FALSE],
+                                     1, any))
+    # currently checking to see if ANY X6-X20 included = FP
+  }
+}
+```
+
+
+<!-- Variable-Level Results -->
+
+```{r}
+create_var_summary <- function(var_store, scenarios, methods, beta_full, 
+                              true_ids) {
+  rows <- list()
+  for(s in seq_len(nrow(scenarios))) {
+    for(m in methods) {
+      for(vi in seq_len(p)) {
+        v <- paste0("x", vi)
+        vs <- var_store[[s]][[m]][[v]]
+        is_true <- vi %in% true_ids
+        truth <- beta_full[vi]
+
+        n_total <- length(vs$selected)
+        n_sel <- sum(vs$selected)
+
+        if (is_true) { # NA type I error for signal, type 2 error for noise
+          type1 <- NA_real_
+          type2 <- (n_total - n_sel) / n_total
+        } else {
+          type1 <- n_sel / n_total
+          type2 <- NA_real_
+        }
+
+        if (n_sel > 0) {
+          est_sel <- vs$est[vs$selected]
+          low_sel <- vs$lower[vs$selected]
+          upp_sel <- vs$upper[vs$selected]
+          bias <- mean(est_sel - truth, na.rm = TRUE)
+          coverage <- mean(low_sel <= truth & upp_sel >= truth, 
+                           na.rm = TRUE) * 100
+        } else {
+          bias <- NA_real_
+          coverage <- NA_real_
+        }
+
+        rows[[length(rows) + 1]] <- data.frame(
+          scenario = scenarios$label[s],
+          n = scenarios$n[s],
+          rho = scenarios$rho[s],
+          method = m,
+          variable = v,
+          is_true = is_true,
+          truth = truth,
+          n_selected = n_sel,
+          bias = bias,
+          coverage = coverage,
+          type1 = type1,
+          type2 = type2,
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+  }
+  do.call(rbind, rows)
+}
+
+var_summary <- create_var_summary(var_store, scenarios, methods, beta_full, true_ids)
+```
+
+
+<!-- Overall Results -->
+
+```{r}
+overall_df <- data.frame(
+  scenario = rep(scenarios$label, each = length(methods)),
+  n = rep(scenarios$n, each = length(methods)),
+  rho = rep(scenarios$rho, each = length(methods)),
+  method = rep(methods, times = n_scenarios),
+  tpr = as.vector(t(overall_tpr)),
+  fpr = as.vector(t(overall_fpr)),
+  stringsAsFactors = FALSE
+)
+```
+
+<!-- Save -->
+
+```{r}
+saveRDS(
+  list(
+    overall = overall_df,
+    variable_level = var_summary,
+    raw = var_store # just in case raw data is needed
+  ),
+  file = "simulation_results.rds"
+)
+
+plan(sequential) # free up workers from future 
+```
+
+
+<!------------------->
+<!-- Data Analysis -->
+
+
