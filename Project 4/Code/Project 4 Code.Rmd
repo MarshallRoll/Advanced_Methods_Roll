@@ -11,6 +11,8 @@ library(tidyverse)
 library(hdrm)
 library(future)
 library(future.apply)
+library(MASS)
+library(flextable)
 ```
 
 <!-- Simulation Size -->
@@ -49,7 +51,7 @@ simulate_data <- function(n, rho) {
 <!-- Simulation Parameters -->
 
 ```{r}
-n_sims <- 10
+n_sims <- 2500
 p <- 20
 n_true <- 5
 n_null <- 15
@@ -162,7 +164,6 @@ refit_ols <- function(X, y, selected) {
 
 ```{r}
 run_one_sim <- function(sim, n, rho, p, methods, k_pval, beta_full) {
-  set.seed(sim) # Setting seed manually here instead of in parallel processing
 
   dat <- simulate_data(n = n, rho = rho)
   X <- dat$X
@@ -224,6 +225,7 @@ run_one_sim <- function(sim, n, rho, p, methods, k_pval, beta_full) {
 
 ```{r, warning = FALSE}
 all_scenario_results <- vector("list", n_scenarios)
+set.seed(333)
 
 for(s in seq_len(n_scenarios)) {
   n <- scenarios$n[s]
@@ -236,7 +238,7 @@ for(s in seq_len(n_scenarios)) {
     run_one_sim,
     n = n, rho = rho, p = p, methods = methods,
     k_pval = k_pval, beta_full = beta_full,
-    future.seed = NULL  # Manually changing seed inside run_one_sim function
+    future.seed = TRUE
   )
 
   all_scenario_results[[s]] <- sim_results
@@ -297,7 +299,7 @@ for(s in seq_len(n_scenarios)) {
   # TPR and FPR
   true_vars <- paste0("x", true_ids)
   null_vars  <- paste0("x", null_ids)
-  for (m in methods) {
+  for(m in methods) {
     overall_tpr[s, m] <- mean(apply(sel_array[, m, true_vars, drop = FALSE], 
                                      1, all))
     # currently checking to see if ALL X1-X5 included in model = TP
@@ -335,15 +337,15 @@ create_var_summary <- function(var_store, scenarios, methods, beta_full,
         }
 
         if (n_sel > 0) {
-          est_sel <- vs$est[vs$selected]
-          low_sel <- vs$lower[vs$selected]
-          upp_sel <- vs$upper[vs$selected]
-          bias <- mean(est_sel - truth, na.rm = TRUE)
-          coverage <- mean(low_sel <= truth & upp_sel >= truth, 
-                           na.rm = TRUE) * 100
+        # Impute 0 for sims where variable was not selected
+          est_all <- ifelse(vs$selected, vs$est, 0)
+          low_all <- ifelse(vs$selected, vs$lower, 0)
+          upp_all <- ifelse(vs$selected, vs$upper, 0)
+          bias <- mean(est_all - truth, na.rm = TRUE)
+          coverage <- mean(low_all <= truth & upp_all >= truth, na.rm = TRUE) * 100
         } else {
-          bias <- NA_real_
-          coverage <- NA_real_
+          bias <- mean(0 - truth)  # = -truth
+          coverage <- if (truth == 0) 100 else 0
         }
 
         rows[[length(rows) + 1]] <- data.frame(
@@ -403,5 +405,266 @@ plan(sequential) # free up workers from future
 
 <!------------------->
 <!-- Data Analysis -->
+<!------------------->
 
+<!-- Cleaning -->
+
+```{r}
+obj <- readRDS("simulation_results.rds")
+overall_df <- obj$overall
+var_summary <- obj$variable_level
+
+method_labels <- c(
+  "backward_pval" = "Backward (p-val)",
+  "aic" = "AIC",
+  "bic" = "BIC",
+  "lasso_min" = "LASSO (min)",
+  "lasso_1se" = "LASSO (1se)",
+  "enet_min" = "Elastic Net (min)",
+  "enet_1se" = "Elastic Net (1se)"
+)
+
+overall_df <- overall_df %>%
+  mutate(
+    method = factor(method, levels = names(method_labels),
+                    labels = method_labels),
+    n_label = paste0("n = ", n),
+    rho_label = paste0("\u03c1 = ", rho)
+  )
+
+var_summary <- var_summary %>%
+  mutate(
+    method = factor(method, levels = names(method_labels),
+                    labels = method_labels),
+    n_label = paste0("n = ", n),
+    rho_label = paste0("\u03c1 = ", rho)
+  )
+```
+
+<!-- Overall Plots -->
+
+```{r}
+# Sensitivity & Specificity by sim scenario
+overall_long <- overall_df %>%
+  pivot_longer(cols = c(tpr, fpr), 
+               names_to = "metric", 
+               values_to = "value") %>%
+  mutate(metric = factor(metric, levels = c("tpr", "fpr"),
+                         labels = c("TPR", "FPR")))
+
+overall_plot <- overall_long %>%
+  ggplot(aes(x = method, y = value, fill = method)) +
+  geom_col(position = "dodge", width = 0.7) +
+  facet_grid(metric ~ n_label + rho_label, scales = "free_y") +
+  # scale_fill_brewer(palette = "Set1") +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.25),
+                     labels = scales::percent_format()) +
+  labs(x = "", y = "") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    strip.text = element_text(size = 8),
+    panel.spacing = unit(0.5, "lines")
+  ) +
+  guides(fill = guide_legend(nrow = 2))
+
+overall_plot
+```
+
+```{r}
+# bias plot
+bias_df <- var_summary %>%
+  filter(is_true) %>%
+  mutate(variable = factor(variable, levels = paste0("x", 1:5)))
+
+bias_plot <- bias_df %>%
+  ggplot(aes(x = variable, y = bias, color = method, group = method)) +
+  geom_point(size = 2, position = position_dodge(width = 0.5)) +
+  geom_hline(yintercept = 0, linetype = "dashed", 
+             color = "grey40") +
+  facet_grid(n_label ~ rho_label) +
+  labs(x = "Variable", y = "Bias",
+       title = "Unconditional Bias for True Predictors") +
+  theme_minimal() +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    panel.spacing = unit(0.5, "lines")
+  ) +
+  guides(color = guide_legend(nrow = 2))
+
+bias_plot
+```
+
+
+```{r}
+coverage_plot <- bias_df %>%
+  ggplot(aes(x = variable, y = coverage, color = method, group = method)) +
+  geom_point(size = 2, position = position_dodge(width = 0.5)) +
+  geom_hline(yintercept = 95, linetype = "dashed", color = "grey40") +
+  geom_hline(yintercept = 93, linetype = "dotted", color = "red",
+             linewidth = 0.6) +
+  facet_grid(n_label ~ rho_label) +
+  scale_y_continuous(limits = c(90, 100), breaks = seq(90, 100, 2.5)) +
+  labs(x = "Variable", y = "Coverage (%)",
+       title = "Unconditional 95% CI Coverage for True Predictors",
+       caption = "Dashed line: nominal 95%. Dotted red line: 93% threshold for severe undercoverage.") +
+  theme_minimal() +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    panel.spacing = unit(0.5, "lines")
+  ) +
+  guides(color = guide_legend(nrow = 2))
+
+coverage_plot
+```
+
+```{r}
+type1_df <- var_summary %>%
+  filter(!is_true) %>%
+  group_by(scenario, n, rho, n_label, rho_label, method) %>%
+  summarise(mean_type1 = mean(type1, na.rm = TRUE), .groups = "drop")
+
+p_type1 <- type1_df %>%
+  ggplot(aes(x = method, y = mean_type1, fill = method)) +
+  geom_col(width = 0.7) +
+  geom_hline(yintercept = 0.05, linetype = "dashed", color = "grey40") +
+  facet_grid(n_label ~ rho_label) +
+  scale_y_continuous(limits = c(0, NA), labels = scales::percent_format()) +
+  labs(x = "", y = "Mean Type I Error Rate",
+       title = "Type I Error Rate for Null Predictors (averaged over x6\u2013x20)",
+       caption = "Dashed line: 0.05 reference.") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    panel.spacing = unit(0.5, "lines")
+  ) +
+  guides(fill = guide_legend(nrow = 2))
+
+p_type1
+```
+
+<!-- Variable Level Tables -->
+
+```{r}
+# Helper functions to make color gradient tables
+# low_bad sets direction of "bad" values
+make_bg_matrix <- function(mat, low_bad = FALSE,
+                            bad_color = "#f28b82",
+                            good_color = "#ffffff") {
+  vals <- as.vector(mat)
+  n_nonmissing <- sum(!is.na(vals))
+  rnks <- matrix(
+    rank(vals, na.last = "keep", ties.method = "min"),
+    nrow = nrow(mat), ncol = ncol(mat)
+  )
+  pct <- rnks / n_nonmissing
+  if (low_bad) pct <- 1 - pct
+  color_fn <- colorRampPalette(c(good_color, bad_color))
+  colors <- color_fn(101)
+  matrix(
+    colors[round(pct * 100) + 1],
+    nrow = nrow(mat), ncol = ncol(mat)
+  )
+}
+
+make_bg_matrix_absolute <- function(mat, low_bad = FALSE,
+                                     bad_color = "#f28b82",
+                                     good_color = "#ffffff",
+                                     min_val = 0,
+                                     max_val = 1) {
+  # Clamp to [min_val, max_val] then scale to [0, 1]
+  pct <- (mat - min_val) / (max_val - min_val)
+  pct <- pmax(0, pmin(1, pct))
+  if (low_bad) pct <- 1 - pct
+  color_fn <- colorRampPalette(c(good_color, bad_color))
+  colors <- color_fn(101)
+  matrix(
+    colors[round(pct * 100) + 1],
+    nrow = nrow(mat), ncol = ncol(mat)
+  )
+}
+
+apply_bg <- function(ft, bg_mat, col_offset = 2) {
+  for (i in seq_len(nrow(bg_mat))) {
+    for (j in seq_len(ncol(bg_mat))) {
+      ft <- bg(ft, i = i, j = j + col_offset,
+               bg = bg_mat[i, j], part = "body")
+    }
+  }
+  ft
+}
+
+# Helper function to pivot data wider
+make_wide_numeric <- function(data, metric_col, method_order) {
+  data %>%
+    mutate(variable = factor(variable, levels = paste0("x", 1:20))) %>%
+    dplyr::select(scenario, variable, method, all_of(metric_col)) %>%
+    arrange(scenario, variable) %>%
+    pivot_wider(names_from = method, values_from = all_of(metric_col)) %>%
+    dplyr::select(all_of(method_order)) %>% 
+    as.matrix()
+}
+
+# Method display names in a fixed order
+method_order <- unname(method_labels)
+
+# True preds
+true_df <- var_summary %>%
+  filter(is_true) %>%
+  mutate(method = recode(method, !!!method_labels))
+
+# Bias
+bias_wide <- make_wide_table(true_df, "bias",
+                             fmt_fn = function(x) sprintf("%.4f", x))
+bias_num <- make_wide_numeric(true_df, "bias", method_order) %>% abs()
+bias_bg  <- make_bg_matrix(bias_num, low_bad = FALSE, bad_color = "#fadedc")
+ft_bias  <- flextable(bias_wide) %>%
+  merge_v(j = "Scenario") %>% fmt_ft() %>%
+  apply_bg(bias_bg, col_offset = 2)
+ft_bias
+
+# Coverage
+cov_wide <- make_wide_table(true_df, "coverage",
+                            fmt_fn = function(x) sprintf("%.1f%%", x))
+cov_num <- make_wide_numeric(true_df, "coverage", method_order)
+cov_bg  <- make_bg_matrix(cov_num, low_bad = TRUE)  # low = bad
+ft_cov  <- flextable(cov_wide) %>%
+  merge_v(j = "Scenario") %>% fmt_ft() %>%
+  apply_bg(cov_bg, col_offset = 2)
+ft_cov
+
+# Type II error - cap at 20%
+type2_bg <- make_bg_matrix_absolute(type2_num, low_bad = FALSE,
+                                     bad_color = "#f28b82",
+                                     min_val = 0, max_val = 0.20)
+
+ft_type2 <- flextable(type2_wide) %>%
+  merge_v(j = "Scenario") %>% fmt_ft() %>%
+  apply_bg(type2_bg, col_offset = 2)
+ft_type2
+
+# Null preds 
+null_df <- var_summary %>%
+  filter(!is_true) %>%
+  mutate(method = recode(method, !!!method_labels))
+
+# Type I error - floor at 5%, cap at 50% for viz purposes
+type1_wide <- make_wide_table(null_df, "type1")
+type1_num  <- make_wide_numeric(null_df, "type1", method_order)
+type1_bg <- make_bg_matrix_absolute(type1_num, low_bad = FALSE,
+                                     bad_color = "#f28b82",
+                                     min_val = 0.05, max_val = 0.3)
+ft_type1   <- flextable(type1_wide) %>%
+  merge_v(j = "Scenario") %>% fmt_ft() %>%
+  apply_bg(type1_bg, col_offset = 2)
+ft_type1
+```
 
