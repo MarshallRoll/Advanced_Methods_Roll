@@ -410,7 +410,8 @@ plan(sequential) # free up workers from future
 <!-- Cleaning -->
 
 ```{r}
-obj <- readRDS("simulation_results.rds")
+# Raw data stored locally in Documents\Advanced_Methods_Roll\Project 4\DataRaw
+obj <- readRDS("../DataRaw/simulation_results.rds")
 overall_df <- obj$overall
 var_summary <- obj$variable_level
 
