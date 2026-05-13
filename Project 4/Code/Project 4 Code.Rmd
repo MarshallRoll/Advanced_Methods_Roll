@@ -2,7 +2,9 @@
 title: "Project 4 Code"
 author: "Marshall Roll"
 date: "`r Sys.Date()`"
-output: html_document
+output:
+  word_document: default
+  html_document: default
 ---
 <!-- Packages -->
 
@@ -13,6 +15,7 @@ library(future)
 library(future.apply)
 library(MASS)
 library(flextable)
+library(glmnet)
 ```
 
 <!-- Simulation Size -->
@@ -86,7 +89,7 @@ select_backward_pval <- function(X, y) {
   df <- as.data.frame(X)
   df$y <- y
   full_fit <- lm(y ~ ., data = df)
-  step_fit <- stepAIC(full_fit, direction = "backward",
+  step_fit <- MASS::stepAIC(full_fit, direction = "backward",
                       k = k_pval, trace = FALSE)
   setdiff(names(coef(step_fit)), "(Intercept)")
 }
@@ -96,7 +99,7 @@ select_aic <- function(X, y) {
   df <- as.data.frame(X)
   df$y <- y
   full_fit <- lm(y ~ ., data = df)
-  step_fit <- stepAIC(full_fit, direction = "backward",
+  step_fit <- MASS::stepAIC(full_fit, direction = "backward",
                       k = 2, trace = FALSE)
   setdiff(names(coef(step_fit)), "(Intercept)")
 }
@@ -107,7 +110,7 @@ select_bic <- function(X, y) {
   df <- as.data.frame(X)
   df$y <- y
   full_fit <- lm(y ~ ., data = df)
-  step_fit <- stepAIC(full_fit, direction = "backward",
+  step_fit <- MASS::stepAIC(full_fit, direction = "backward",
                       k = log(n), trace = FALSE)
   setdiff(names(coef(step_fit)), "(Intercept)")
 }
@@ -175,10 +178,10 @@ run_one_sim <- function(sim, n, rho, p, methods, k_pval, beta_full) {
                                                  lasso_1se = character(0)))
   enet_sel <- tryCatch(select_enet_both(X, y), # zero out errors
                         error = function(e) list(enet_min = character(0),
-                                                 enet_1se = character(0))) 
-  
+                                                 enet_1se = character(0)))
+
   sel_list <- list(
-    backward_pval = tryCatch(select_backward_pval(X, y), 
+    backward_pval = tryCatch(select_backward_pval(X, y),
                              error = function(e) character(0)),
     aic = tryCatch(select_aic(X, y), error = function(e) character(0)),
     bic = tryCatch(select_bic(X, y), error = function(e) character(0)),
@@ -196,7 +199,7 @@ run_one_sim <- function(sim, n, rho, p, methods, k_pval, beta_full) {
     selected <- sel_list[[m]]
     sel_vec <- setNames(all_vars %in% selected, all_vars)
 
-    ols_est <- ols_lower <- ols_upper <- setNames(rep(NA_real_, p), all_vars) 
+    ols_est <- ols_lower <- ols_upper <- setNames(rep(NA_real_, p), all_vars)
     #NA_real_ defaults to numeric type NA rather than logical
 
     if (length(selected) > 0) {
@@ -254,7 +257,7 @@ overall_tpr <- matrix(NA_real_, nrow = n_scenarios, ncol = length(methods),
 overall_fpr <- matrix(NA_real_, nrow = n_scenarios, ncol = length(methods),
                       dimnames = list(scenarios$label, methods))
 
-# Three-level storage: Scenario, Method, Variable 
+# Three-level storage: Scenario, Method, Variable
 var_store <- vector("list", n_scenarios)
 
 for(s in seq_len(n_scenarios)) {
@@ -300,7 +303,7 @@ for(s in seq_len(n_scenarios)) {
   true_vars <- paste0("x", true_ids)
   null_vars  <- paste0("x", null_ids)
   for(m in methods) {
-    overall_tpr[s, m] <- mean(apply(sel_array[, m, true_vars, drop = FALSE], 
+    overall_tpr[s, m] <- mean(apply(sel_array[, m, true_vars, drop = FALSE],
                                      1, all))
     # currently checking to see if ALL X1-X5 included in model = TP
     overall_fpr[s, m] <- mean(apply(sel_array[, m, null_vars, drop = FALSE],
@@ -314,7 +317,7 @@ for(s in seq_len(n_scenarios)) {
 <!-- Variable-Level Results -->
 
 ```{r}
-create_var_summary <- function(var_store, scenarios, methods, beta_full, 
+create_var_summary <- function(var_store, scenarios, methods, beta_full,
                               true_ids) {
   rows <- list()
   for(s in seq_len(nrow(scenarios))) {
@@ -399,7 +402,7 @@ saveRDS(
   file = "simulation_results.rds"
 )
 
-plan(sequential) # free up workers from future 
+plan(sequential) # free up workers from future
 ```
 
 
@@ -473,6 +476,7 @@ overall_plot <- overall_long %>%
   guides(fill = guide_legend(nrow = 2))
 
 overall_plot
+ggsave("../Reports/overall_tpr_fpr.png", plot = overall_plot, width = 8, height = 6, dpi = 300)
 ```
 
 ```{r}
@@ -498,6 +502,7 @@ bias_plot <- bias_df %>%
   guides(color = guide_legend(nrow = 2))
 
 bias_plot
+ggsave("../Reports/bias.png", plot = bias_plot, width = 8, height = 6, dpi = 300)
 ```
 
 
@@ -511,8 +516,7 @@ coverage_plot <- bias_df %>%
   facet_grid(n_label ~ rho_label) +
   scale_y_continuous(limits = c(90, 100), breaks = seq(90, 100, 2.5)) +
   labs(x = "Variable", y = "Coverage (%)",
-       title = "Unconditional 95% CI Coverage for True Predictors",
-       caption = "Dashed line: nominal 95%. Dotted red line: 93% threshold for severe undercoverage.") +
+       title = "Unconditional 95% CI Coverage for True Predictors") +
   theme_minimal() +
   theme(
     legend.title = element_blank(),
@@ -522,6 +526,7 @@ coverage_plot <- bias_df %>%
   guides(color = guide_legend(nrow = 2))
 
 coverage_plot
+ggsave("../Reports/coverage.png", plot = coverage_plot, width = 8, height = 6, dpi = 300)
 ```
 
 ```{r}
@@ -537,8 +542,7 @@ p_type1 <- type1_df %>%
   facet_grid(n_label ~ rho_label) +
   scale_y_continuous(limits = c(0, NA), labels = scales::percent_format()) +
   labs(x = "", y = "Mean Type I Error Rate",
-       title = "Type I Error Rate for Null Predictors (averaged over x6\u2013x20)",
-       caption = "Dashed line: 0.05 reference.") +
+       title = "Mean Type I Error Rate for Null Predictors") +
   theme_minimal() +
   theme(
     axis.text.x = element_blank(),
@@ -550,11 +554,24 @@ p_type1 <- type1_df %>%
   guides(fill = guide_legend(nrow = 2))
 
 p_type1
+ggsave("../Reports/type1_mean.png", plot = p_type1, width = 8, height = 6, dpi = 300)
 ```
 
 <!-- Variable Level Tables -->
 
 ```{r}
+# Helper function to format flextable
+fmt_ft <- function(ft) {
+  ft %>%
+    theme_vanilla() %>%
+    bold(part = "header") %>%
+    align(align = "center", part = "all") %>%
+    align(j = 1:2, align = "left", part = "body") %>%
+    fontsize(size = 8, part = "all") %>%
+    autofit() %>%
+    set_table_properties(layout = "autofit")
+}
+
 # Helper functions to make color gradient tables
 # low_bad sets direction of "bad" values
 make_bg_matrix <- function(mat, low_bad = FALSE,
@@ -614,6 +631,21 @@ make_wide_numeric <- function(data, metric_col, method_order) {
     as.matrix()
 }
 
+# Helper function to pivot table wider
+make_wide_table <- function(data, metric_col,
+fmt_fn = function(x) sprintf("%.3f", x)) {
+data %>%
+mutate(
+val = fmt_fn(.data[[metric_col]]),
+variable = factor(variable,
+levels = paste0("x", 1:20))
+) %>%
+dplyr::select(scenario, variable, method, val) %>%
+arrange(scenario, variable) %>%
+pivot_wider(names_from = method, values_from = val) %>%
+rename(Scenario = scenario, Variable = variable)
+}
+
 # Method display names in a fixed order
 method_order <- unname(method_labels)
 
@@ -636,13 +668,15 @@ ft_bias
 cov_wide <- make_wide_table(true_df, "coverage",
                             fmt_fn = function(x) sprintf("%.1f%%", x))
 cov_num <- make_wide_numeric(true_df, "coverage", method_order)
-cov_bg  <- make_bg_matrix(cov_num, low_bad = TRUE)  # low = bad
-ft_cov  <- flextable(cov_wide) %>%
+cov_bg <- make_bg_matrix(cov_num, low_bad = TRUE)  # low = bad
+ft_cov <- flextable(cov_wide) %>%
   merge_v(j = "Scenario") %>% fmt_ft() %>%
   apply_bg(cov_bg, col_offset = 2)
 ft_cov
 
 # Type II error - cap at 20%
+type2_wide <- make_wide_table(true_df, "type2")
+type2_num <- make_wide_numeric(true_df, "type2", method_order)
 type2_bg <- make_bg_matrix_absolute(type2_num, low_bad = FALSE,
                                      bad_color = "#f28b82",
                                      min_val = 0, max_val = 0.20)
